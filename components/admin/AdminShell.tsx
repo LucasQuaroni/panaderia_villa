@@ -39,11 +39,11 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       <div className="p-6 border-b border-sidebar-border">
         <div className="flex items-center gap-3">
           <Image
-            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/image-pzsxhOTUTwtcCJEniT8BlyynX5e4TT.png"
+            src="/logo-final.png"
             alt="Villa"
-            width={70}
-            height={40}
-            className="object-contain brightness-200"
+            width={2048}
+            height={2048}
+            className="object-contain h-9 w-auto"
           />
           <div>
             <div className="text-xs text-sidebar-foreground/60 font-body">Panel de</div>

@@ -40,15 +40,20 @@ export default function Navbar() {
             : 'bg-transparent'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-6 flex items-center justify-between h-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between min-h-[5.5rem] md:min-h-[6.5rem] py-2">
           {/* Logo */}
-          <button onClick={() => handleNav('#inicio')} className="flex items-center gap-2 group">
+          <button
+            onClick={() => handleNav('#inicio')}
+            className="flex items-center shrink-0 group -my-1"
+            type="button"
+          >
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/image-pzsxhOTUTwtcCJEniT8BlyynX5e4TT.png"
+              src="/logo-final.png"
               alt="Panadería Villa"
-              width={90}
-              height={50}
-              className="object-contain"
+              width={2048}
+              height={2048}
+              priority
+              className="object-contain object-left h-16 w-auto max-w-[calc(100vw-5.5rem)] sm:h-[4.5rem] md:h-[5.5rem] lg:h-24"
             />
           </button>
 

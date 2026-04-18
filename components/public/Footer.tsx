@@ -9,11 +9,11 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto px-6 py-12 flex flex-col md:flex-row items-center justify-between gap-6">
         <div className="flex items-center gap-3">
           <Image
-            src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/image-pzsxhOTUTwtcCJEniT8BlyynX5e4TT.png"
+            src="/logo-final.png"
             alt="Panadería Villa"
-            width={70}
-            height={40}
-            className="object-contain brightness-200 opacity-80"
+            width={2048}
+            height={2048}
+            className="object-contain h-10 w-auto"
           />
           <div>
             <div className="font-sans text-lg font-bold text-cream">Panadería Villa</div>

@@ -40,11 +40,12 @@ export default function AdminLoginPage() {
           {/* Logo */}
           <div className="flex flex-col items-center mb-8">
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/image-pzsxhOTUTwtcCJEniT8BlyynX5e4TT.png"
+              src="/logo-final.png"
               alt="Villa"
-              width={100}
-              height={56}
-              className="object-contain brightness-200"
+              width={2048}
+              height={2048}
+              priority
+              className="object-contain h-14 w-auto"
             />
             <h1 className="font-sans text-2xl font-bold text-cream mt-4">Panel de Administración</h1>
             <p className="font-body text-sm text-warm-gray-light mt-1">Ingresá con tus credenciales</p>
