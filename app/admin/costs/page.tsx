@@ -135,9 +135,14 @@ export default function AdminCostsPage() {
 
   // ── Recipes CRUD ──────────────────────────────────────────────────────────────
   const openNewRecipe = () => {
-    const firstProduct = products[0]
+    const availableProducts = products.filter(p => !recipes.some(r => r.product_id === p.id))
+    if (availableProducts.length === 0) {
+      alert("No hay productos disponibles sin receta asignada.")
+      return
+    }
+    const firstProduct = availableProducts[0]
     setEditingRecipe({
-      product_id: firstProduct?.id ?? '',
+      product_id: firstProduct.id,
       yield_qty: 1,
       markup_pct: 250,
       notes: '',
@@ -193,6 +198,20 @@ export default function AdminCostsPage() {
         }))
       )
     }
+
+    // Calcula y actualiza el precio del producto principal:
+    const finalCost = validItems.reduce((sum, item) => {
+      const mat = materials.find(m => m.id === item.raw_material_id)
+      if (!mat || !item.quantity) return sum
+      return sum + item.quantity * mat.unit_price
+    }, 0)
+    
+    const yieldQty = editingRecipe.yield_qty ?? 1
+    const perUnit = yieldQty > 0 ? finalCost / yieldQty : finalCost
+    const markup = editingRecipe.markup_pct ?? 250
+    const suggestedPrice = perUnit * (1 + markup / 100)
+
+    await supabase.from('products').update({ price: suggestedPrice }).eq('id', editingRecipe.product_id)
 
     await fetchRecipes()
     closeRecipe()
@@ -377,7 +396,7 @@ export default function AdminCostsPage() {
           <div className="flex justify-end mb-4">
             <button
               onClick={openNewRecipe}
-              disabled={products.length === 0}
+              disabled={products.filter(p => !recipes.some(r => r.product_id === p.id)).length === 0}
               className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark disabled:opacity-50 transition-colors shadow-md"
             >
               <Plus size={15} /> Nueva receta
@@ -402,9 +421,12 @@ export default function AdminCostsPage() {
                       <select
                         value={editingRecipe.product_id ?? ''}
                         onChange={e => setEditingRecipe(prev => ({ ...prev!, product_id: e.target.value }))}
-                        className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white"
+                        disabled={!isNewRecipe}
+                        className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white disabled:opacity-60"
                       >
-                        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        {products
+                          .filter(p => isNewRecipe ? !recipes.some(r => r.product_id === p.id) : p.id === editingRecipe.product_id)
+                          .map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </div>
                     <div className="flex flex-col gap-1">

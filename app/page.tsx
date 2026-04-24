@@ -5,6 +5,7 @@ import AboutSection from '@/components/public/AboutSection'
 import ProductsSection from '@/components/public/ProductsSection'
 import ContactSection from '@/components/public/ContactSection'
 import Footer from '@/components/public/Footer'
+import WhatsAppButton from '@/components/public/WhatsAppButton'
 
 async function getSiteData() {
   const supabase = await createClient()
@@ -33,12 +34,13 @@ export default async function Home() {
       <Navbar />
       <HeroSection
         title={content.hero_title ?? 'Hecho con amor, horneado con pasión'}
-        subtitle={content.hero_subtitle ?? 'Desde 1987 trayendo el sabor artesanal a tu mesa'}
+        subtitle={content.hero_subtitle ?? 'Tradición y Excelencia desde 1948'}
       />
       <AboutSection content={content} />
       <ProductsSection products={products} />
       <ContactSection content={content} />
       <Footer />
+      <WhatsAppButton />
     </main>
   )
 }

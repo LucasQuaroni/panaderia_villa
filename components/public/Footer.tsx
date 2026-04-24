@@ -17,7 +17,7 @@ export default function Footer() {
           />
           <div>
             <div className="font-sans text-lg font-bold text-cream">Panadería Villa</div>
-            <div className="font-body text-xs text-cream/50">Hecho con amor desde 1987</div>
+            <div className="font-body text-xs text-cream/50">Tradición y Excelencia desde 1948</div>
           </div>
         </div>
 
@@ -33,8 +33,11 @@ export default function Footer() {
           ))}
         </div>
 
-        <div className="font-body text-xs text-cream/40 text-center">
-          © {year} Panadería Villa. Todos los derechos reservados.
+        <div className="flex flex-col items-center md:items-end gap-1.5 font-body text-xs text-cream/40 text-center md:text-right">
+          <div>© {year} Panadería Villa. Todos los derechos reservados.</div>
+          <div>
+            Developed with ❤️ by <a href="https://www.linkedin.com/in/lucasquaroni/" target="_blank" rel="noopener noreferrer" className="text-cream/60 hover:text-gold transition-colors duration-300">Lucas Quaroni</a>
+          </div>
         </div>
       </div>
     </footer>

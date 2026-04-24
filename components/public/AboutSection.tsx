@@ -1,7 +1,7 @@
 'use client'
 
 import { motion, useInView } from 'framer-motion'
-import { useRef } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import Image from 'next/image'
 
 interface ContentMap {
@@ -24,6 +24,15 @@ const fadeUp = {
 export default function AboutSection({ content }: AboutSectionProps) {
   const ref = useRef<HTMLElement>(null)
   const inView = useInView(ref, { once: true, margin: '-100px' })
+  const [currentImg, setCurrentImg] = useState(0)
+  const images = ['/abuelos.jpg', '/horno.jpg', '/camion.jpg']
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentImg(c => (c + 1) % images.length)
+    }, 3500)
+    return () => clearInterval(timer)
+  }, [images.length])
 
   return (
     <section ref={ref} id="nosotros" className="section-padding bg-cream-dark relative overflow-hidden">
@@ -58,12 +67,11 @@ export default function AboutSection({ content }: AboutSectionProps) {
             className="relative"
           >
             <div className="relative rounded-2xl overflow-hidden shadow-2xl aspect-[4/3]">
-              <Image
-                src="/about-bakery.jpg"
-                alt="El equipo de Panadería Villa"
-                fill
-                className="object-cover"
-              />
+              {images.map((img, idx) => (
+                <div key={img} className={`absolute inset-0 transition-opacity duration-1000 ${idx === currentImg ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
+                  <Image src={img} alt="Panadería Villa" fill className="object-cover" />
+                </div>
+              ))}
               {/* Burgundy overlay accent */}
               <div className="absolute inset-0 bg-gradient-to-t from-burgundy-dark/40 to-transparent" />
             </div>
@@ -72,9 +80,9 @@ export default function AboutSection({ content }: AboutSectionProps) {
               initial={{ opacity: 0, scale: 0.8 }}
               animate={inView ? { opacity: 1, scale: 1 } : {}}
               transition={{ delay: 0.5, duration: 0.5 }}
-              className="absolute -bottom-6 -right-6 bg-burgundy text-cream rounded-2xl p-5 shadow-xl"
+              className="absolute -bottom-6 -right-6 bg-burgundy text-cream rounded-2xl p-5 shadow-xl z-20"
             >
-              <div className="font-sans text-3xl font-bold">+35</div>
+              <div className="font-sans text-3xl font-bold">+75</div>
               <div className="font-body text-xs text-cream/80 mt-1">años horneando</div>
             </motion.div>
           </motion.div>
@@ -91,8 +99,8 @@ export default function AboutSection({ content }: AboutSectionProps) {
             </p>
             <div className="grid grid-cols-2 gap-4 mt-2">
               {[
-                { icon: '🌾', label: 'Harina premium', desc: 'Seleccionada artesanalmente' },
-                { icon: '🔥', label: 'Horno de piedra', desc: 'Temperatura perfecta' },
+                { icon: '🌾', label: 'Excelencia en materias primas', desc: 'Seleccionada artesanalmente' },
+                { icon: '🔥', label: 'Alimentos frescos', desc: 'Temperatura perfecta' },
                 { icon: '🧑‍🍳', label: 'Recetas de familia', desc: 'Transmitidas por generaciones' },
                 { icon: '🌿', label: 'Sin conservantes', desc: '100% natural y fresco' },
               ].map((item) => (
@@ -131,14 +139,16 @@ export default function AboutSection({ content }: AboutSectionProps) {
               name: content.founder1_name,
               role: content.founder1_role,
               bio: content.founder1_bio,
-              image: '/founder-carlos.jpg',
+              image: '/pedro.jpg',
+              position: 'object-center',
               delay: 4,
             },
             {
               name: content.founder2_name,
               role: content.founder2_role,
               bio: content.founder2_bio,
-              image: '/founder-maria.jpg',
+              image: '/angelita.jpg',
+              position: 'object-[center_15%]',
               delay: 5,
             },
           ].map((founder) => (
@@ -155,7 +165,7 @@ export default function AboutSection({ content }: AboutSectionProps) {
                   src={founder.image}
                   alt={founder.name || ''}
                   fill
-                  className="object-cover group-hover:scale-105 transition-transform duration-700"
+                  className={`object-cover group-hover:scale-105 transition-transform duration-700 ${founder.position}`}
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-charcoal/60 to-transparent" />
                 <div className="absolute bottom-4 left-6 right-6">

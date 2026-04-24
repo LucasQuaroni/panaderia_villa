@@ -3,7 +3,7 @@
 import { motion, useInView, AnimatePresence } from 'framer-motion'
 import { useRef, useState } from 'react'
 import Image from 'next/image'
-import { ShoppingBag, Star, Tag } from 'lucide-react'
+import { ShoppingBag, Star } from 'lucide-react'
 
 interface Product {
   id: string
@@ -32,11 +32,6 @@ const cardVariants = {
   }),
 }
 
-function formatPrice(price: number | null, unit: string) {
-  if (price === null) return 'Consultar'
-  const fmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 })
-  return `${fmt.format(price)} / ${unit}`
-}
 
 function ProductCard({ product, index }: { product: Product; index: number }) {
   const [hovered, setHovered] = useState(false)
@@ -107,13 +102,7 @@ function ProductCard({ product, index }: { product: Product; index: number }) {
         <p className="font-body text-xs text-warm-gray line-clamp-2 leading-relaxed mb-4">
           {product.description}
         </p>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Tag size={14} className="text-burgundy" />
-            <span className="font-body text-base font-bold text-burgundy">
-              {formatPrice(product.price, product.unit)}
-            </span>
-          </div>
+        <div className="flex items-center justify-end">
           <a
             href="#contacto"
             onClick={(e) => {

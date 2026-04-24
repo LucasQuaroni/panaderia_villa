@@ -39,14 +39,39 @@ export default function AdminProductsPage() {
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [form, setForm] = useState<Omit<Product, 'id'>>(emptyProduct)
   const [saving, setSaving] = useState(false)
+  
+  // Categorías dinámicas
+  const [categories, setCategories] = useState<string[]>(CATEGORIES)
+  const [manageCats, setManageCats] = useState(false)
+  const [newCat, setNewCat] = useState('')
 
   const fetchProducts = async () => {
-    const { data } = await supabase
-      .from('products')
-      .select('*')
-      .order('sort_order')
-    setProducts(data ?? [])
+    const [prodRes, catRes] = await Promise.all([
+      supabase.from('products').select('*').order('sort_order'),
+      supabase.from('site_content').select('value').eq('key', 'product_categories').single()
+    ])
+    setProducts(prodRes.data ?? [])
+    if (catRes.data) {
+      try { setCategories(JSON.parse(catRes.data.value)) } catch {}
+    }
     setLoading(false)
+  }
+
+  const saveCategories = async (cats: string[]) => {
+    await supabase.from('site_content').upsert({ key: 'product_categories', value: JSON.stringify(cats) })
+    setCategories(cats)
+  }
+
+  const addCategory = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newCat.trim() || categories.includes(newCat.trim())) return
+    await saveCategories([...categories, newCat.trim()])
+    setNewCat('')
+  }
+
+  const deleteCategory = async (cat: string) => {
+    if (!confirm(`¿Eliminar la categoría "${cat}"?`)) return
+    await saveCategories(categories.filter(c => c !== cat))
   }
 
   useEffect(() => { fetchProducts() }, [])
@@ -108,13 +133,58 @@ export default function AdminProductsPage() {
           <h1 className="font-sans text-3xl font-bold text-charcoal">Productos</h1>
           <p className="font-body text-warm-gray mt-1">Gestioná los productos del catálogo.</p>
         </div>
-        <button
-          onClick={openNew}
-          className="flex items-center gap-2 px-5 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors shadow-md"
-        >
-          <Plus size={16} /> Nuevo producto
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setManageCats(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white text-charcoal border border-border rounded-xl font-body text-sm font-semibold hover:bg-cream transition-colors shadow-sm"
+          >
+            Categorías
+          </button>
+          <button
+            onClick={openNew}
+            className="flex items-center gap-2 px-5 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors shadow-md"
+          >
+            <Plus size={16} /> Nuevo producto
+          </button>
+        </div>
       </div>
+
+      {/* Modal Categorías */}
+      {manageCats && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm">
+            <div className="flex items-center justify-between p-6 border-b border-border">
+              <h2 className="font-sans text-xl font-bold text-charcoal">Categorías</h2>
+              <button onClick={() => setManageCats(false)} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+            </div>
+            <div className="p-6 flex flex-col gap-4">
+              <form onSubmit={addCategory} className="flex gap-2">
+                <input
+                  type="text"
+                  value={newCat}
+                  onChange={e => setNewCat(e.target.value)}
+                  placeholder="Nueva categoría..."
+                  className="flex-1 px-3 py-2 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
+                />
+                <button type="submit" className="px-3 py-2 bg-burgundy text-cream rounded-lg font-body text-sm hover:bg-burgundy-dark transition-colors">
+                  Añadir
+                </button>
+              </form>
+              <div className="max-h-60 overflow-y-auto pr-1 flex flex-col gap-2">
+                {categories.map(c => (
+                  <div key={c} className="flex items-center justify-between p-3 border border-border rounded-xl font-body text-sm text-charcoal bg-white">
+                    {c}
+                    <button onClick={() => deleteCategory(c)} className="text-warm-gray hover:text-red-500 transition-colors">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+                {categories.length === 0 && <div className="text-center font-body text-sm text-warm-gray py-4">No hay categorías.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Form modal */}
       {editingId !== null && (
@@ -157,7 +227,8 @@ export default function AdminProductsPage() {
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Categoría</label>
                   <select name="category" value={form.category ?? ''} onChange={handleChange}
                     className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white">
-                    {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                    <option value="">— Sin categoría —</option>
+                    {categories.map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <div className="flex flex-col gap-1">
@@ -167,20 +238,35 @@ export default function AdminProductsPage() {
                     min="0" />
                 </div>
                 <div className="flex flex-col gap-1 sm:col-span-2">
-                  <label className="font-body text-xs text-warm-gray uppercase tracking-wide">URL de imagen</label>
-                  <input name="image_url" value={form.image_url ?? ''} onChange={handleChange}
-                    className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
-                    placeholder="https://..." />
+                  <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Imagen del producto</label>
+                  <label className="cursor-pointer inline-block w-fit">
+                    <span className="px-4 py-2 border border-border text-charcoal rounded-lg font-body text-sm bg-white hover:bg-cream transition-colors block">
+                      Seleccionar imagen...
+                    </span>
+                    <input type="file" accept="image/*" onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onloadend = () => {
+                        setForm(prev => ({ ...prev, image_url: reader.result as string }));
+                      };
+                      reader.readAsDataURL(file);
+                    }} className="hidden" />
+                  </label>
+                  {form.image_url && <img src={form.image_url} alt="Preview" className="h-16 w-16 object-cover rounded mt-2 shadow border border-border" />}
                 </div>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" name="featured" checked={form.featured} onChange={handleChange}
                     className="w-4 h-4 accent-burgundy" />
                   <span className="font-body text-sm text-charcoal">Destacado</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" name="active" checked={form.active} onChange={handleChange}
-                    className="w-4 h-4 accent-burgundy" />
-                  <span className="font-body text-sm text-charcoal">Activo</span>
+                <label className="flex items-center gap-2 cursor-pointer sm:col-span-2">
+                  <div className="relative">
+                    <input type="checkbox" name="active" checked={form.active} onChange={handleChange} className="sr-only" />
+                    <div className={`block w-10 h-6 rounded-full transition-colors ${form.active ? 'bg-burgundy' : 'bg-warm-gray/30'}`}></div>
+                    <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${form.active ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                  </div>
+                  <span className="font-body text-sm text-charcoal">Mostrar al público</span>
                 </label>
               </div>
 
@@ -235,9 +321,9 @@ export default function AdminProductsPage() {
                   </td>
                   <td className="px-4 py-3 text-center">
                     <button onClick={() => toggleActive(p)}
-                      className={`p-1.5 rounded-lg transition-colors ${p.active ? 'text-green-600 bg-green-50 hover:bg-green-100' : 'text-warm-gray bg-cream-dark hover:bg-border'}`}
-                      title={p.active ? 'Activo' : 'Inactivo'}>
-                      {p.active ? <Eye size={15} /> : <EyeOff size={15} />}
+                      className={`relative w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-300 ease-in-out mx-auto ${p.active ? 'bg-burgundy' : 'bg-warm-gray/30'}`}
+                      title={p.active ? 'Visible' : 'Oculto'}>
+                      <div className={`bg-white w-4 h-4 rounded-full shadow-sm transform transition-transform duration-300 ease-in-out ${p.active ? 'translate-x-5' : 'translate-x-0'}`} />
                     </button>
                   </td>
                   <td className="px-4 py-3">

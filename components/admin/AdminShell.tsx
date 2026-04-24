@@ -30,7 +30,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   const handleLogout = async () => {
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.push('/admin/login')
+    router.push('/auth/login')
   }
 
   const SidebarContent = () => (

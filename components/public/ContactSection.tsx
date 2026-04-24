@@ -20,12 +20,12 @@ export default function ContactSection({ content }: ContactSectionProps) {
   const ref = useRef<HTMLElement>(null)
   const inView = useInView(ref, { once: true, margin: '-80px' })
 
-  const [form, setForm] = useState({ name: '', email: '', phone: '', message: '' })
+  const [form, setForm] = useState({ name: '', email: '', phone: '', message: '', type: 'consulta' })
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState('')
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
@@ -41,7 +41,7 @@ export default function ContactSection({ content }: ContactSectionProps) {
       })
       if (!res.ok) throw new Error('Error al enviar')
       setSent(true)
-      setForm({ name: '', email: '', phone: '', message: '' })
+      setForm({ name: '', email: '', phone: '', message: '', type: 'consulta' })
     } catch {
       setError('Hubo un error al enviar el mensaje. Por favor intentá de nuevo.')
     } finally {
@@ -49,8 +49,12 @@ export default function ContactSection({ content }: ContactSectionProps) {
     }
   }
 
-  const lat = parseFloat(content.map_lat || '-34.6037')
-  const lng = parseFloat(content.map_lng || '-58.3816')
+  const checkOverride = (val: string | undefined, defaultOld: string, defaultNew: string) => {
+    return (!val || val === defaultOld) ? defaultNew : val
+  }
+
+  const lat = parseFloat(checkOverride(content.map_lat, '-34.6037', '-33.2836250'))
+  const lng = parseFloat(checkOverride(content.map_lng, '-58.3816', '-62.1839518'))
   const mapSrc = `https://maps.google.com/maps?q=${lat},${lng}&z=${content.map_zoom || 15}&output=embed`
 
   return (
@@ -88,10 +92,10 @@ export default function ContactSection({ content }: ContactSectionProps) {
               className="grid sm:grid-cols-2 gap-4"
             >
               {[
-                { icon: MapPin, label: 'Dirección', value: content.contact_address, color: 'text-gold' },
-                { icon: Phone, label: 'Teléfono', value: content.contact_phone, color: 'text-gold' },
+                { icon: MapPin, label: 'Dirección', value: checkOverride(content.contact_address, 'Av. del Pan 1234, Ciudad', 'Independencia 154, Corral de Bustos'), color: 'text-gold' },
+                { icon: Phone, label: 'Teléfono', value: checkOverride(content.contact_phone, '+54 11 1234-5678', '3468-648828'), color: 'text-gold' },
                 { icon: Mail, label: 'Email', value: content.contact_email, color: 'text-gold' },
-                { icon: Clock, label: 'Horarios', value: content.contact_hours, color: 'text-gold' },
+                { icon: Clock, label: 'Horarios', value: checkOverride(content.contact_hours, 'Lunes a Sábado: 7:00 – 20:00 | Domingo: 8:00 – 14:00', 'Lunes a viernes de 7:30 a 12:30 y de 17 a 20. Sábados de 8:30 a 12:30.'), color: 'text-gold' },
               ].map(({ icon: Icon, label, value, color }) => (
                 <div
                   key={label}
@@ -207,6 +211,21 @@ export default function ContactSection({ content }: ContactSectionProps) {
                       placeholder="tu@email.com"
                       className="px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-cream placeholder:text-warm-gray font-body text-sm focus:outline-none focus:border-gold transition-colors"
                     />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="font-body text-xs text-warm-gray-light uppercase tracking-wide">
+                      Motivo del contacto *
+                    </label>
+                    <select
+                      name="type"
+                      required
+                      value={form.type}
+                      onChange={handleChange}
+                      className="px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-cream font-body text-sm focus:outline-none focus:border-gold transition-colors"
+                    >
+                      <option value="consulta" className="bg-charcoal text-cream">Consulta General</option>
+                      <option value="pedido" className="bg-charcoal text-cream">Quiero hacer un Pedido</option>
+                    </select>
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="font-body text-xs text-warm-gray-light uppercase tracking-wide">

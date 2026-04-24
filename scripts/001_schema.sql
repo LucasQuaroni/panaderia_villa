@@ -12,7 +12,7 @@ INSERT INTO public.site_content (key, value) VALUES
   ('hero_title',       'Hecho con amor, horneado con pasión'),
   ('hero_subtitle',    'Desde 1987 trayendo el sabor artesanal a tu mesa'),
   ('about_title',      'Quiénes Somos'),
-  ('about_body',       'Villa nació de la pasión de dos hermanos panaderos que soñaban con llevar el pan artesanal de calidad a cada hogar. Con más de 35 años de historia, seguimos usando las recetas originales de la familia.'),
+  ('about_body',       'Villa nació de la pasión de dos hermanos panaderos que soñaban con llevar el pan artesanal de calidad a cada hogar. Con más de 75 años de historia, seguimos usando las recetas originales de la familia.'),
   ('founder1_name',    'Carlos Villa'),
   ('founder1_role',    'Co-fundador & Maestro Panadero'),
   ('founder1_bio',     'Carlos aprendió el arte de la panadería a los 14 años junto a su abuelo. Su dedicación y técnica son el alma de cada pan que sale de nuestro horno.'),

@@ -20,11 +20,12 @@ export default function HeroSection({ title, subtitle }: HeroSectionProps) {
   }
 
   return (
-    <section
-      ref={ref}
-      id="inicio"
-      className="relative h-screen min-h-[640px] overflow-hidden flex items-center justify-center"
-    >
+    <>
+      <section
+        ref={ref}
+        id="inicio"
+        className="relative h-screen min-h-[640px] overflow-hidden flex items-center justify-center"
+      >
       {/* Parallax background */}
       <motion.div
         style={{ y }}
@@ -53,7 +54,7 @@ export default function HeroSection({ title, subtitle }: HeroSectionProps) {
       {/* Content */}
       <motion.div
         style={{ opacity }}
-        className="relative z-10 text-center px-6 max-w-4xl mx-auto"
+        className="relative z-10 text-center px-6 max-w-4xl mx-auto mt-8 md:mt-32"
       >
         {/* Eyebrow */}
         <motion.div
@@ -64,7 +65,7 @@ export default function HeroSection({ title, subtitle }: HeroSectionProps) {
         >
           <div className="h-px w-12 bg-gold" />
           <span className="text-gold font-body text-sm tracking-[0.25em] uppercase font-medium">
-            Desde 1987
+            Tradición y Excelencia desde 1948
           </span>
           <div className="h-px w-12 bg-gold" />
         </motion.div>
@@ -110,42 +111,24 @@ export default function HeroSection({ title, subtitle }: HeroSectionProps) {
           </button>
         </motion.div>
 
-        {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.8 }}
-          className="mt-16 flex items-center justify-center gap-8 md:gap-16"
-        >
-          {[
-            { value: '+35', label: 'Años de historia' },
-            { value: '+50', label: 'Productos artesanales' },
-            { value: '100%', label: 'Ingredientes naturales' },
-          ].map((stat) => (
-            <div key={stat.label} className="text-center">
-              <div className="text-gold font-sans text-2xl md:text-3xl font-bold">{stat.value}</div>
-              <div className="text-cream/70 font-body text-xs tracking-wide mt-1">{stat.label}</div>
-            </div>
-          ))}
-        </motion.div>
       </motion.div>
-
-      {/* Scroll indicator */}
-      <motion.button
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 1.2 }}
-        onClick={scrollDown}
-        className="absolute bottom-8 left-1/2 -translate-x-1/2 text-cream/60 hover:text-gold transition-colors"
-        aria-label="Scroll hacia abajo"
-      >
-        <motion.div
-          animate={{ y: [0, 8, 0] }}
-          transition={{ repeat: Infinity, duration: 1.8, ease: 'easeInOut' }}
-        >
-          <ChevronDown size={32} />
-        </motion.div>
-      </motion.button>
     </section>
+
+    {/* Barra de Estadísticas */}
+    <div className="bg-charcoal border-t-4 border-gold py-10 relative z-20 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+      <div className="max-w-5xl mx-auto px-6 flex flex-wrap items-center justify-center gap-12 md:gap-32">
+        {[
+          { value: '+75', label: 'Años de historia' },
+          { value: '+50', label: 'Productos artesanales' },
+          { value: '100%', label: 'Ingredientes naturales' },
+        ].map((stat) => (
+          <div key={stat.label} className="text-center">
+            <div className="text-gold font-sans text-4xl md:text-5xl font-bold mb-1">{stat.value}</div>
+            <div className="text-cream/80 font-body text-xs md:text-sm tracking-[0.2em] uppercase font-semibold">{stat.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+    </>
   )
 }
