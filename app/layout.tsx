@@ -16,20 +16,21 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'Panadería Villa — Hecho con amor, horneado con pasión',
+  title: "Panadería Villa — Hecho con amor, horneado con pasión",
   description:
-    'Panadería artesanal Villa. Desde 1948 elaboramos panes, facturas y tortas con ingredientes naturales y recetas de familia. Pedidos y consultas online.',
-  keywords: 'panadería, pan artesanal, facturas, tortas, Villa, panadería artesanal',
+    "Panadería artesanal Villa. Desde 1947 elaboramos panes, facturas y tortas con ingredientes naturales y recetas de familia. Pedidos y consultas online.",
+  keywords:
+    "panadería, pan artesanal, facturas, tortas, Villa, panadería artesanal",
   openGraph: {
-    title: 'Panadería Villa',
-    description: 'Hecho con amor, horneado con pasión',
-    type: 'website',
+    title: "Panadería Villa",
+    description: "Hecho con amor, horneado con pasión",
+    type: "website",
   },
   icons: {
-    icon: '/logo-final.png',
-    apple: '/logo-final.png',
+    icon: "/logo-final.png",
+    apple: "/logo-final.png",
   },
-}
+};
 
 export default function RootLayout({
   children,

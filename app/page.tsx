@@ -33,8 +33,8 @@ export default async function Home() {
     <main className="min-h-screen">
       <Navbar />
       <HeroSection
-        title={content.hero_title ?? 'Hecho con amor, horneado con pasión'}
-        subtitle={content.hero_subtitle ?? 'Tradición y Excelencia desde 1948'}
+        title={content.hero_title ?? "Hecho con amor, horneado con pasión"}
+        subtitle={content.hero_subtitle ?? "Tradición y Excelencia desde 1947"}
       />
       <AboutSection content={content} />
       <ProductsSection products={products} />
@@ -42,5 +42,5 @@ export default async function Home() {
       <Footer />
       <WhatsAppButton />
     </main>
-  )
+  );
 }
