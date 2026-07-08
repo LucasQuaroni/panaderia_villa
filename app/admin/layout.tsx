@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import AdminShell from '@/components/admin/AdminShell'
+import ServiceWorkerRegister from '@/components/admin/ServiceWorkerRegister'
 import { getUserRole } from '@/lib/auth/roles'
 
 export const metadata = {
@@ -17,5 +18,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
   const role = await getUserRole()
 
-  return <AdminShell role={role}>{children}</AdminShell>
+  return (
+    <>
+      <ServiceWorkerRegister />
+      <AdminShell role={role}>{children}</AdminShell>
+    </>
+  )
 }

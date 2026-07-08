@@ -7,19 +7,23 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import {
   LayoutDashboard, Package, Users, MessageSquare, Calculator,
-  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer,
+  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt,
 } from 'lucide-react'
 
 type Role = 'admin' | 'cashier' | null
 
 const navItems = [
   { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true, adminOnly: false },
+  { href: '/admin/pos', label: 'Mostrador (Ventas)', icon: ShoppingCart, adminOnly: false },
   { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: false },
+  { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
   { href: '/admin/products', label: 'Productos', icon: Package, adminOnly: true },
+  { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
+  { href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true },
+  { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },
   { href: '/admin/content', label: 'Contenido', icon: FileText, adminOnly: true },
   { href: '/admin/messages', label: 'Mensajes', icon: MessageSquare, adminOnly: true },
   { href: '/admin/orders', label: 'Pedidos', icon: ShoppingBag, adminOnly: true },
-  { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
 ]
 
 export default function AdminShell({ children, role }: { children: React.ReactNode; role?: Role }) {
@@ -81,11 +85,6 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
             </Link>
           )
         })}
-        {!isAdmin && (
-          <div className="mt-2 mx-1 px-3 py-3 rounded-xl bg-sidebar-accent/30 text-sidebar-foreground/60 font-body text-xs leading-relaxed">
-            El módulo de ventas estará disponible próximamente.
-          </div>
-        )}
       </nav>
 
       {/* Links de vista pública + logout */}

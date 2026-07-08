@@ -114,10 +114,10 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 **Objetivo:** la pantalla de atención, amigable y táctil-first (todavía sin lógica de cobro real).
 
-- [ ] Layout "modo mostrador" sin el menú de administración. **P1 · M**
-- [ ] Botones grandes, texto claro, pocos pasos; funciona con dedo o mouse. **P1 · M**
-- [ ] Grilla de productos con favoritos/más vendidos arriba. **P1 · S**
-- [ ] Estados vacíos que guían y confirmaciones claras ("Venta registrada ✓"). **P2 · S**
+- [~] Pantalla de mostrador dedicada (`/admin/pos`). **P1 · M** *(vive dentro del panel; el layout sin menú se puede pulir después).*
+- [x] Botones grandes, texto claro, pocos pasos; funciona con mouse (y táctil). **P1 · M** → `app/admin/pos/page.tsx`
+- [x] Grilla de productos con buscador y **destacados primero** (favoritos). **P1 · S** → `app/admin/pos/page.tsx`
+- [x] Estados vacíos que guían y confirmaciones claras ("Venta registrada ✓"). **P2 · S**
 
 **Criterio de aceptación:** quien atiende ve una pantalla simple, toca un producto y arma un "carrito" de prueba; se ve bien en pantalla táctil y con mouse.
 
@@ -127,14 +127,14 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 **Objetivo:** registrar ventas, con o sin internet. Es el tramo más grande; se subdivide.
 
-- [ ] Migraciones: `sales`, `sale_items`, `payment_methods`, `stock_movements`. **P0 · M**
-- [ ] PWA + service worker (la caja se instala y abre sin internet). **P0 · M**
-- [ ] Almacén local (IndexedDB): cada venta se guarda al instante con UUID. **P0 · L**
-- [ ] Flujo de venta: elegir producto → peso manual / unidades → medio de pago → registrar. **P0 · L**
-- [ ] Cola de sincronización idempotente (sube al reconectar, sin duplicar). **P0 · L**
-- [ ] RPC transaccional venta → descuento de stock (con reconciliación, sin frenar el cobro). **P0 · M**
-- [ ] Indicador de estado: "sin conexión — X por subir" / "todo sincronizado". **P1 · S**
-- [ ] Corregir/anular la última venta (según permiso a definir). **P1 · S**
+- [x] Migraciones: `sales`, `sale_items`, `stock_movements` (medios de pago fijos por ahora). **P0 · M** → `scripts/004_ventas_stock_caja.sql`
+- [x] PWA instalable + **service worker** (offline tras cerrar/reabrir). **P0 · M** → `app/manifest.ts` + `public/sw.js`
+- [x] Almacén local: cada venta se guarda al instante con UUID (persistente). **P0 · L** → `lib/pos/queue.ts`
+- [x] Flujo de venta: elegir producto → peso / unidades → medio de pago → registrar. **P0 · L** → `app/admin/pos/page.tsx`
+- [x] Cola de sincronización idempotente (sube al reconectar, sin duplicar). **P0 · L** → `lib/pos/sync.ts`
+- [x] RPC transaccional venta → descuento de stock (sin frenar el cobro). **P0 · M** → `register_sale()`
+- [x] Indicador de estado: "En línea / Sin conexión" y "X por subir". **P1 · S**
+- [x] Anular la última venta (revierte stock; función `void_sale`). **P1 · S** → `app/admin/pos/page.tsx`
 
 **Criterio de aceptación:** se puede cobrar con internet cortado; al volver la conexión las ventas suben solas y no se duplican; el stock se descuenta correctamente.
 
@@ -146,11 +146,11 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 **Objetivo:** reemplazar el cierre de caja en papel.
 
-- [ ] Migración: `cash_sessions` (fondo inicial, cierre, totales, diferencias). **P0 · S**
-- [ ] Apertura de caja (declarar fondo inicial). **P0 · S**
-- [ ] Cierre diario: total por medio de pago, efectivo esperado vs. contado, diferencia. **P0 · M**
-- [ ] Métricas del día: cantidad de tickets, producto más vendido, ticket promedio. **P1 · S**
-- [ ] Consultar cierres de días anteriores. **P1 · S**
+- [x] Migración: `cash_sessions` (fondo inicial, cierre, totales, diferencias). **P0 · S** → `scripts/004_ventas_stock_caja.sql`
+- [x] Apertura de caja (declarar fondo inicial). **P0 · S** → `app/admin/pos/page.tsx`
+- [x] Cierre diario: total por medio de pago, efectivo esperado vs. contado, diferencia. **P0 · M** → `app/admin/pos/page.tsx`
+- [x] Métricas del día: tickets, ticket promedio y **producto más vendido**. **P1 · S**
+- [x] Consultar cierres de días anteriores (Historial de Caja). **P1 · S** → `app/admin/caja/page.tsx`
 
 **Criterio de aceptación:** se abre caja a la mañana, se cierra a la noche con un botón y el resumen cuadra; queda guardado y consultable.
 
@@ -160,11 +160,11 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 **Objetivo:** stock real de insumos, producción y ventas.
 
-- [ ] Compras de materias primas (entradas de stock). **P1 · S**
-- [ ] Tandas de producción (`production_batches`): consumen insumos, suman producto. **P1 · M**
-- [ ] Avisos de stock bajo. **P1 · S**
-- [ ] Mermas y ajustes de inventario. **P2 · S**
-- [ ] Reportes básicos de stock y ventas. **P1 · M**
+- [x] Compras de materias primas (entradas de stock). **P1 · S** → `app/admin/stock/page.tsx`
+- [x] Tandas de producción (`production_batches`): consumen insumos, suman producto. **P1 · M** → `scripts/005_stock.sql` + `register_production()`
+- [x] Avisos de stock bajo (umbral `min_stock`). **P1 · S**
+- [x] Mermas y ajustes de inventario. **P2 · S**
+- [x] Stock actual (vistas) + historial de caja como reporte base. **P1 · M** *(reportes avanzados: follow-up).*
 
 **Criterio de aceptación:** al cargar una tanda baja el stock de insumos y sube el de producto; las ventas descuentan producto; se ve cuánto se vendió y cuánto queda.
 
@@ -174,10 +174,10 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 **Objetivo:** leer el peso directo de la Systel Clipse (mejora sobre un POS que ya funciona).
 
-- [ ] Prueba de lectura del puerto serie para confirmar la trama exacta. **P2 · S**
-- [ ] Comprar el adaptador USB-serie (kit Systel a PC). **P2 · S**
-- [ ] Módulo Web Serial: abrir puerto (9600 8N1), parsear trama ASCII, validar XOR. **P2 · M**
-- [ ] Integrar el peso al flujo de venta (con carga manual como respaldo). **P2 · S**
+- [x] Módulo Web Serial: abrir puerto (9600 8N1) + autoconexión + parseo de peso. **P2 · M** → `lib/pos/scale.ts`
+- [x] Integrar el peso al flujo de venta (con carga manual como respaldo). **P2 · S** → `app/admin/pos/page.tsx`
+- [ ] Comprar el adaptador USB–serie (kit Systel a PC). *(acción tuya)*
+- [ ] Probar con el cable puesto y ajustar `parseWeight` a la trama exacta de tu unidad. *(en el negocio)*
 
 **Criterio de aceptación:** al poner un producto en la balanza, el peso aparece solo en la pantalla de venta; si la lectura falla, se puede tipear.
 

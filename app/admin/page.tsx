@@ -1,15 +1,24 @@
 import { createClient } from '@/lib/supabase/server'
-import { Package, MessageSquare, ShoppingBag, Users } from 'lucide-react'
+import { Package, MessageSquare, ShoppingBag, Users, Receipt, ShoppingCart, ArrowRight } from 'lucide-react'
 import Link from 'next/link'
 
 export default async function AdminDashboard() {
   const supabase = await createClient()
 
-  const [productsRes, messagesRes, ordersRes] = await Promise.all([
+  const start = new Date(); start.setHours(0, 0, 0, 0)
+  const end = new Date(start); end.setDate(end.getDate() + 1)
+
+  const [productsRes, messagesRes, ordersRes, salesRes] = await Promise.all([
     supabase.from('products').select('id', { count: 'exact', head: true }),
     supabase.from('contact_messages').select('id', { count: 'exact', head: true }).eq('read', false),
     supabase.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'pendiente'),
+    supabase.from('sales').select('total').gte('sold_at', start.toISOString()).lt('sold_at', end.toISOString()),
   ])
+
+  const todaySales = salesRes.data ?? []
+  const todayTotal = todaySales.reduce((s, r) => s + Number(r.total), 0)
+  const todayCount = todaySales.length
+  const fmt = (n: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 
   const stats = [
     { label: 'Productos activos', value: productsRes.count ?? 0, icon: Package, href: '/admin/products', color: 'bg-burgundy' },
@@ -23,6 +32,20 @@ export default async function AdminDashboard() {
         <h1 className="font-sans text-3xl font-bold text-charcoal">Bienvenido al Panel</h1>
         <p className="font-body text-warm-gray mt-1">Gestioná el contenido y operaciones de Panadería Villa.</p>
       </div>
+
+      {/* Ventas de hoy */}
+      <Link href="/admin/ventas" className="group block mb-8 bg-burgundy text-cream rounded-2xl p-6 shadow-md hover:shadow-lg transition-all">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-body text-sm text-cream/70 flex items-center gap-2"><Receipt size={15} /> Ventas de hoy</p>
+            <p className="font-sans text-4xl font-bold mt-1">{fmt(todayTotal)}</p>
+            <p className="font-body text-sm text-cream/80 mt-1 flex items-center gap-1.5"><ShoppingCart size={14} /> {todayCount} ticket(s)</p>
+          </div>
+          <span className="flex items-center gap-1 font-body text-sm font-semibold opacity-80 group-hover:opacity-100 transition-opacity">
+            Ver detalle <ArrowRight size={16} />
+          </span>
+        </div>
+      </Link>
 
       {/* Stats grid */}
       <div className="grid sm:grid-cols-3 gap-5 mb-10">
