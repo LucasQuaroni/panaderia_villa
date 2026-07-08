@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Plus, Pencil, Trash2, Star, Eye, EyeOff, Save, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, Star, Eye, EyeOff, Save, X, Search } from 'lucide-react'
 
 interface Product {
   id: string
@@ -39,7 +39,31 @@ export default function AdminProductsPage() {
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [form, setForm] = useState<Omit<Product, 'id'>>(emptyProduct)
   const [saving, setSaving] = useState(false)
-  
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [imageError, setImageError] = useState('')
+  const [search, setSearch] = useState('')
+
+  // Sube la imagen a Supabase Storage y guarda solo el enlace (ya no base64).
+  const handleImageUpload = async (file: File) => {
+    setImageError('')
+    setUploadingImage(true)
+    try {
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+      const path = `${crypto.randomUUID()}.${ext}`
+      const { error } = await supabase.storage
+        .from('product-images')
+        .upload(path, file, { cacheControl: '3600', upsert: false })
+      if (error) throw error
+      const { data } = supabase.storage.from('product-images').getPublicUrl(path)
+      setForm((prev) => ({ ...prev, image_url: data.publicUrl }))
+    } catch (err) {
+      console.error('[upload imagen]', err)
+      setImageError('No se pudo subir la imagen. Verificá tus permisos e intentá de nuevo.')
+    } finally {
+      setUploadingImage(false)
+    }
+  }
+
   // Categorías dinámicas
   const [categories, setCategories] = useState<string[]>(CATEGORIES)
   const [manageCats, setManageCats] = useState(false)
@@ -241,18 +265,15 @@ export default function AdminProductsPage() {
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Imagen del producto</label>
                   <label className="cursor-pointer inline-block w-fit">
                     <span className="px-4 py-2 border border-border text-charcoal rounded-lg font-body text-sm bg-white hover:bg-cream transition-colors block">
-                      Seleccionar imagen...
+                      {uploadingImage ? 'Subiendo...' : 'Seleccionar imagen...'}
                     </span>
-                    <input type="file" accept="image/*" onChange={(e) => {
+                    <input type="file" accept="image/*" disabled={uploadingImage} onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
-                      const reader = new FileReader();
-                      reader.onloadend = () => {
-                        setForm(prev => ({ ...prev, image_url: reader.result as string }));
-                      };
-                      reader.readAsDataURL(file);
+                      handleImageUpload(file);
                     }} className="hidden" />
                   </label>
+                  {imageError && <span className="font-body text-xs text-red-500 mt-1">{imageError}</span>}
                   {form.image_url && <img src={form.image_url} alt="Preview" className="h-16 w-16 object-cover rounded mt-2 shadow border border-border" />}
                 </div>
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -271,7 +292,7 @@ export default function AdminProductsPage() {
               </div>
 
               <div className="flex gap-3 pt-2">
-                <button onClick={handleSave} disabled={saving}
+                <button onClick={handleSave} disabled={saving || uploadingImage}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark disabled:opacity-60 transition-colors">
                   {saving ? <span className="animate-spin border-2 border-cream/30 border-t-cream rounded-full w-4 h-4" /> : <Save size={16} />}
                   {saving ? 'Guardando...' : 'Guardar'}
@@ -285,6 +306,18 @@ export default function AdminProductsPage() {
           </div>
         </div>
       )}
+
+      {/* Buscador */}
+      <div className="relative max-w-sm mb-4">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Buscar producto o categoría..."
+          className="w-full pl-9 pr-3 py-2.5 border border-border rounded-xl font-body text-sm focus:outline-none focus:border-burgundy bg-white"
+        />
+      </div>
 
       {/* Products table */}
       {loading ? (
@@ -302,7 +335,9 @@ export default function AdminProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {products
+                .filter(p => `${p.name} ${p.category ?? ''} ${p.description ?? ''}`.toLowerCase().includes(search.toLowerCase()))
+                .map((p) => (
                 <tr key={p.id} className="border-b border-border/50 hover:bg-cream/50 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -350,6 +385,11 @@ export default function AdminProductsPage() {
           {products.length === 0 && (
             <div className="text-center py-12 text-warm-gray font-body text-sm">
               No hay productos. Creá el primero.
+            </div>
+          )}
+          {products.length > 0 && products.filter(p => `${p.name} ${p.category ?? ''} ${p.description ?? ''}`.toLowerCase().includes(search.toLowerCase())).length === 0 && (
+            <div className="text-center py-12 text-warm-gray font-body text-sm">
+              Sin resultados para “{search}”.
             </div>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import AdminShell from '@/components/admin/AdminShell'
+import { getUserRole } from '@/lib/auth/roles'
 
 export const metadata = {
   title: 'Admin — Panadería Villa',
@@ -14,5 +15,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect('/auth/login')
   }
 
-  return <AdminShell>{children}</AdminShell>
+  const role = await getUserRole()
+
+  return <AdminShell role={role}>{children}</AdminShell>
 }

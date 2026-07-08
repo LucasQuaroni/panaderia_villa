@@ -1,6 +1,6 @@
 'use client'
 
-import { motion, useInView, AnimatePresence } from 'framer-motion'
+import { motion, useInView, AnimatePresence, type Variants } from 'framer-motion'
 import { useRef, useState } from 'react'
 import Image from 'next/image'
 import { ShoppingBag, Star } from 'lucide-react'
@@ -22,7 +22,7 @@ interface ProductsSectionProps {
 
 const categories = ['Todos', 'Panes', 'Facturas', 'Tortas', 'Especiales']
 
-const cardVariants = {
+const cardVariants: Variants = {
   hidden: { opacity: 0, y: 30, scale: 0.95 },
   visible: (i: number) => ({
     opacity: 1,
