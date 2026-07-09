@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import {
   Package, Calculator, Plus, Pencil, Trash2, Save, X,
-  TrendingUp, ChevronDown, ChevronRight,
+  TrendingUp, ChevronDown, ChevronRight, Search,
 } from 'lucide-react'
 
 interface RawMaterial {
@@ -51,6 +51,7 @@ export default function AdminCostsPage() {
   const [matLoading, setMatLoading] = useState(true)
   const [editingMat, setEditingMat] = useState<Partial<RawMaterial> | null>(null)
   const [isNewMat, setIsNewMat] = useState(false)
+  const [matSearch, setMatSearch] = useState('')
 
   // Recipes
   const [products, setProducts] = useState<Product[]>([])
@@ -60,6 +61,9 @@ export default function AdminCostsPage() {
   const [editingRecipe, setEditingRecipe] = useState<Partial<Recipe> | null>(null)
   const [recipeItems, setRecipeItems] = useState<Partial<RecipeItem>[]>([])
   const [isNewRecipe, setIsNewRecipe] = useState(false)
+  const [recipeSearch, setRecipeSearch] = useState('')
+  const [productName, setProductName] = useState('')          // nombre del producto (permite crear al vuelo)
+  const [saleMode, setSaleMode] = useState<'kg' | 'unidad'>('unidad') // modalidad de venta de la receta
 
   const fetchMaterials = useCallback(async () => {
     const { data } = await supabase.from('raw_materials').select('*').order('name')
@@ -70,10 +74,10 @@ export default function AdminCostsPage() {
   const fetchRecipes = useCallback(async () => {
     const [recRes, prodRes] = await Promise.all([
       supabase.from('recipes').select(`*, items:recipe_items(*, raw_material:raw_materials(*))`).order('created_at'),
-      supabase.from('products').select('id, name, unit').order('name'),
+      supabase.from('products').select('id, name, unit, price').order('name'),
     ])
     setRecipes((recRes.data ?? []) as Recipe[])
-    setProducts(prodRes.data ?? [])
+    setProducts((prodRes.data ?? []) as Product[])
     setRecLoading(false)
   }, [supabase])
 
@@ -135,24 +139,24 @@ export default function AdminCostsPage() {
 
   // ── Recipes CRUD ──────────────────────────────────────────────────────────────
   const openNewRecipe = () => {
-    const availableProducts = products.filter(p => !recipes.some(r => r.product_id === p.id))
-    if (availableProducts.length === 0) {
-      alert("No hay productos disponibles sin receta asignada.")
-      return
-    }
-    const firstProduct = availableProducts[0]
+    // Ya no exige elegir un producto existente: se puede escribir uno nuevo.
     setEditingRecipe({
-      product_id: firstProduct.id,
+      product_id: '',
       yield_qty: 1,
       markup_pct: 250,
       notes: '',
     })
+    setProductName('')
+    setSaleMode('unidad')
     setRecipeItems([{ raw_material_id: '', quantity: 1 }])
     setIsNewRecipe(true)
   }
 
   const openEditRecipe = (r: Recipe) => {
     setEditingRecipe({ ...r })
+    const prod = products.find(p => p.id === r.product_id)
+    setProductName(prod?.name ?? '')
+    setSaleMode(prod?.unit === 'kg' ? 'kg' : 'unidad')
     setRecipeItems(r.items.map(i => ({ ...i })))
     setIsNewRecipe(false)
   }
@@ -166,12 +170,32 @@ export default function AdminCostsPage() {
   }
 
   const saveRecipe = async () => {
-    if (!editingRecipe?.product_id) return
+    if (!editingRecipe) return
+
+    // Resolver el producto: usar el existente o crearlo al vuelo por nombre.
+    let productId = editingRecipe.product_id
+    if (isNewRecipe) {
+      const typed = productName.trim()
+      const match = products.find(p => p.name.toLowerCase() === typed.toLowerCase())
+      if (match) {
+        productId = match.id
+      } else {
+        if (!typed) return  // sin nombre no se puede crear
+        const { data: newProd } = await supabase.from('products').insert({
+          name: typed,
+          unit: saleMode,
+          active: true,
+        }).select().single()
+        productId = newProd?.id
+      }
+    }
+    if (!productId) return
+
     let recipeId = editingRecipe.id
 
     if (isNewRecipe) {
       const { data } = await supabase.from('recipes').insert({
-        product_id: editingRecipe.product_id,
+        product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
         markup_pct: editingRecipe.markup_pct ?? 250,
         notes: editingRecipe.notes,
@@ -179,7 +203,7 @@ export default function AdminCostsPage() {
       recipeId = data?.id
     } else {
       await supabase.from('recipes').update({
-        product_id: editingRecipe.product_id,
+        product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
         markup_pct: editingRecipe.markup_pct ?? 250,
         notes: editingRecipe.notes,
@@ -211,9 +235,10 @@ export default function AdminCostsPage() {
     const markup = editingRecipe.markup_pct ?? 250
     const suggestedPrice = perUnit * (1 + markup / 100)
 
-    await supabase.from('products').update({ price: suggestedPrice }).eq('id', editingRecipe.product_id)
+    // Actualiza precio y modalidad (kg/unidad) del producto de forma coherente.
+    await supabase.from('products').update({ price: suggestedPrice, unit: saleMode }).eq('id', productId)
 
-    await fetchRecipes()
+    await fetchRecipes() // refresca también la lista de productos
     closeRecipe()
   }
 
@@ -270,10 +295,20 @@ export default function AdminCostsPage() {
       {/* ── MATERIALS TAB ── */}
       {tab === 'materials' && (
         <>
-          <div className="flex justify-end mb-4">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between mb-4">
+            <div className="relative flex-1 max-w-sm">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
+              <input
+                type="text"
+                value={matSearch}
+                onChange={e => setMatSearch(e.target.value)}
+                placeholder="Buscar materia prima o proveedor..."
+                className="w-full pl-9 pr-3 py-2.5 border border-border rounded-xl font-body text-sm focus:outline-none focus:border-burgundy bg-white"
+              />
+            </div>
             <button
               onClick={openNewMat}
-              className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors shadow-md"
+              className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors shadow-md whitespace-nowrap"
             >
               <Plus size={15} /> Nueva materia prima
             </button>
@@ -352,7 +387,9 @@ export default function AdminCostsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {materials.map((m) => (
+                  {materials
+                    .filter(m => `${m.name} ${m.supplier ?? ''}`.toLowerCase().includes(matSearch.toLowerCase()))
+                    .map((m) => (
                     <tr key={m.id} className="border-b border-border/50 hover:bg-cream/40 transition-colors">
                       <td className="px-4 py-3">
                         <div className="font-body text-sm font-semibold text-charcoal">{m.name}</div>
@@ -385,6 +422,9 @@ export default function AdminCostsPage() {
               {materials.length === 0 && (
                 <div className="text-center py-12 text-warm-gray font-body text-sm">No hay materias primas. Agregá la primera.</div>
               )}
+              {materials.length > 0 && materials.filter(m => `${m.name} ${m.supplier ?? ''}`.toLowerCase().includes(matSearch.toLowerCase())).length === 0 && (
+                <div className="text-center py-12 text-warm-gray font-body text-sm">Sin resultados para “{matSearch}”.</div>
+              )}
             </div>
           )}
         </>
@@ -393,11 +433,20 @@ export default function AdminCostsPage() {
       {/* ── RECIPES TAB ── */}
       {tab === 'recipes' && (
         <>
-          <div className="flex justify-end mb-4">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between mb-4">
+            <div className="relative flex-1 max-w-sm">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
+              <input
+                type="text"
+                value={recipeSearch}
+                onChange={e => setRecipeSearch(e.target.value)}
+                placeholder="Buscar producto o receta..."
+                className="w-full pl-9 pr-3 py-2.5 border border-border rounded-xl font-body text-sm focus:outline-none focus:border-burgundy bg-white"
+              />
+            </div>
             <button
               onClick={openNewRecipe}
-              disabled={products.filter(p => !recipes.some(r => r.product_id === p.id)).length === 0}
-              className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark disabled:opacity-50 transition-colors shadow-md"
+              className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors shadow-md whitespace-nowrap"
             >
               <Plus size={15} /> Nueva receta
             </button>
@@ -414,23 +463,57 @@ export default function AdminCostsPage() {
                   <button onClick={closeRecipe} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
                 </div>
                 <div className="p-6 flex flex-col gap-5">
-                  {/* Product, yield, markup */}
-                  <div className="grid sm:grid-cols-3 gap-4">
-                    <div className="flex flex-col gap-1 sm:col-span-1">
-                      <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Producto</label>
-                      <select
-                        value={editingRecipe.product_id ?? ''}
-                        onChange={e => setEditingRecipe(prev => ({ ...prev!, product_id: e.target.value }))}
-                        disabled={!isNewRecipe}
-                        className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white disabled:opacity-60"
-                      >
-                        {products
-                          .filter(p => isNewRecipe ? !recipes.some(r => r.product_id === p.id) : p.id === editingRecipe.product_id)
-                          .map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select>
+                  {/* Producto (permite escribir uno nuevo) */}
+                  <div className="flex flex-col gap-1">
+                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Producto</label>
+                    <input
+                      list="rec-products"
+                      value={productName}
+                      onChange={e => {
+                        const val = e.target.value
+                        setProductName(val)
+                        const match = products.find(p => p.name.toLowerCase() === val.trim().toLowerCase())
+                        setEditingRecipe(prev => ({ ...prev!, product_id: match ? match.id : '' }))
+                      }}
+                      disabled={!isNewRecipe}
+                      placeholder="Escribí el nombre (si no existe, se crea)"
+                      className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white disabled:opacity-60"
+                    />
+                    <datalist id="rec-products">
+                      {products.map(p => <option key={p.id} value={p.name} />)}
+                    </datalist>
+                    {isNewRecipe && productName.trim() && !products.some(p => p.name.toLowerCase() === productName.trim().toLowerCase()) && (
+                      <span className="font-body text-xs text-burgundy">Se creará el producto “{productName.trim()}”.</span>
+                    )}
+                  </div>
+
+                  {/* Modalidad de venta */}
+                  <div className="flex flex-col gap-1">
+                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Se vende por</label>
+                    <div className="flex gap-2">
+                      {(['kg', 'unidad'] as const).map(mode => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setSaleMode(mode)}
+                          className={`flex-1 px-4 py-2.5 rounded-lg font-body text-sm font-medium transition-colors border ${
+                            saleMode === mode
+                              ? 'bg-burgundy text-cream border-burgundy'
+                              : 'bg-white text-warm-gray border-border hover:text-charcoal'
+                          }`}
+                        >
+                          {mode === 'kg' ? 'Kilo' : 'Unidad'}
+                        </button>
+                      ))}
                     </div>
+                  </div>
+
+                  {/* Rinde + margen */}
+                  <div className="grid sm:grid-cols-2 gap-4">
                     <div className="flex flex-col gap-1">
-                      <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Rinde (unidades/kg)</label>
+                      <label className="font-body text-xs text-warm-gray uppercase tracking-wide">
+                        {saleMode === 'kg' ? 'Rinde (kg)' : 'Rinde (unidades)'}
+                      </label>
                       <input type="number" min="0.001" step="any"
                         value={editingRecipe.yield_qty ?? 1}
                         onChange={e => setEditingRecipe(prev => ({ ...prev!, yield_qty: Number(e.target.value) }))}
@@ -497,7 +580,7 @@ export default function AdminCostsPage() {
                           <div className="font-sans text-lg font-bold text-charcoal">{fmtARS(perUnit)}</div>
                         </div>
                         <div>
-                          <div className="font-body text-xs text-warm-gray uppercase tracking-wide mb-1">Precio sugerido</div>
+                          <div className="font-body text-xs text-warm-gray uppercase tracking-wide mb-1">Precio sugerido / {saleMode === 'kg' ? 'kg' : 'unidad'}</div>
                           <div className="font-sans text-lg font-bold text-burgundy">{fmtARS(suggested)}</div>
                         </div>
                       </div>
@@ -534,7 +617,12 @@ export default function AdminCostsPage() {
             <div className="text-center py-12 text-warm-gray font-body">Cargando...</div>
           ) : (
             <div className="flex flex-col gap-4">
-              {recipes.map((recipe) => {
+              {recipes
+                .filter((recipe) => {
+                  const p = products.find(pp => pp.id === recipe.product_id)
+                  return (p?.name ?? '').toLowerCase().includes(recipeSearch.toLowerCase())
+                })
+                .map((recipe) => {
                 const product = products.find(p => p.id === recipe.product_id)
                 const costTotal = calcRecipeCost(recipe)
                 const costPerUnit = recipe.yield_qty > 0 ? costTotal / recipe.yield_qty : costTotal
@@ -633,6 +721,14 @@ export default function AdminCostsPage() {
               {recipes.length === 0 && (
                 <div className="text-center py-16 bg-white rounded-2xl border border-border font-body text-warm-gray text-sm">
                   No hay recetas. Creá la primera.
+                </div>
+              )}
+              {recipes.length > 0 && recipes.filter((recipe) => {
+                const p = products.find(pp => pp.id === recipe.product_id)
+                return (p?.name ?? '').toLowerCase().includes(recipeSearch.toLowerCase())
+              }).length === 0 && (
+                <div className="text-center py-16 bg-white rounded-2xl border border-border font-body text-warm-gray text-sm">
+                  Sin resultados para “{recipeSearch}”.
                 </div>
               )}
             </div>

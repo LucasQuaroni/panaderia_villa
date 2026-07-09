@@ -1,0 +1,6 @@
+import { requireAdmin } from '@/lib/auth/roles'
+
+export default async function VentasGuardLayout({ children }: { children: React.ReactNode }) {
+  await requireAdmin()
+  return <>{children}</>
+}

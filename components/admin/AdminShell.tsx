@@ -7,22 +7,32 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import {
   LayoutDashboard, Package, Users, MessageSquare, Calculator,
-  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag,
+  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt,
 } from 'lucide-react'
 
+type Role = 'admin' | 'cashier' | null
+
 const navItems = [
-  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true },
-  { href: '/admin/products', label: 'Productos', icon: Package },
-  { href: '/admin/content', label: 'Contenido', icon: FileText },
-  { href: '/admin/messages', label: 'Mensajes', icon: MessageSquare },
-  { href: '/admin/orders', label: 'Pedidos', icon: ShoppingBag },
-  { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator },
+  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true, adminOnly: false },
+  { href: '/admin/pos', label: 'Mostrador (Ventas)', icon: ShoppingCart, adminOnly: false },
+  { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: false },
+  { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
+  { href: '/admin/products', label: 'Productos', icon: Package, adminOnly: true },
+  { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
+  { href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true },
+  { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },
+  { href: '/admin/content', label: 'Contenido', icon: FileText, adminOnly: true },
+  { href: '/admin/messages', label: 'Mensajes', icon: MessageSquare, adminOnly: true },
+  { href: '/admin/orders', label: 'Pedidos', icon: ShoppingBag, adminOnly: true },
 ]
 
-export default function AdminShell({ children }: { children: React.ReactNode }) {
+export default function AdminShell({ children, role }: { children: React.ReactNode; role?: Role }) {
   const pathname = usePathname()
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const isAdmin = role === 'admin'
+  const visibleNavItems = navItems.filter((item) => isAdmin || !item.adminOnly)
 
   const isActive = (href: string, exact?: boolean) =>
     exact ? pathname === href : pathname.startsWith(href)
@@ -47,14 +57,16 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
           />
           <div>
             <div className="text-xs text-sidebar-foreground/60 font-body">Panel de</div>
-            <div className="text-sm font-semibold text-sidebar-foreground font-sans">Administración</div>
+            <div className="text-sm font-semibold text-sidebar-foreground font-sans">
+              {isAdmin ? 'Administración' : 'Atención'}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Nav */}
       <nav className="flex-1 py-4 px-3 flex flex-col gap-1 overflow-y-auto">
-        {navItems.map(({ href, label, icon: Icon, exact }) => {
+        {visibleNavItems.map(({ href, label, icon: Icon, exact }) => {
           const active = isActive(href, exact)
           return (
             <Link
@@ -99,7 +111,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   return (
     <div className="min-h-screen flex bg-cream-dark font-body">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col w-64 bg-sidebar fixed inset-y-0 left-0 z-30 shadow-xl">
+      <aside className="no-print hidden lg:flex flex-col w-64 bg-sidebar fixed inset-y-0 left-0 z-30 shadow-xl">
         <SidebarContent />
       </aside>
 
@@ -120,9 +132,9 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       )}
 
       {/* Main content */}
-      <div className="flex-1 lg:ml-64 flex flex-col min-h-screen">
+      <div className="flex-1 lg:ml-64 print:!ml-0 flex flex-col min-h-screen">
         {/* Top bar (mobile) */}
-        <header className="lg:hidden flex items-center justify-between px-4 py-3 bg-sidebar text-sidebar-foreground shadow-md">
+        <header className="no-print lg:hidden flex items-center justify-between px-4 py-3 bg-sidebar text-sidebar-foreground shadow-md">
           <button onClick={() => setSidebarOpen(true)}>
             <Menu size={22} />
           </button>

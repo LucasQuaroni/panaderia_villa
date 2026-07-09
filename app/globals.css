@@ -128,3 +128,11 @@
     @apply py-20 md:py-28;
   }
 }
+
+/* ── Impresión (lista de precios) ───────────────────────── */
+@media print {
+  .no-print { display: none !important; }
+  .print-area { position: absolute; left: 0; top: 0; width: 100%; }
+  body { background: #fff !important; }
+  @page { margin: 12mm; }
+}
