@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Scale, Wifi, WifiOff,
@@ -9,7 +10,7 @@ import {
 import { addPending, removePending, pendingCount, type PendingSale } from '@/lib/pos/queue'
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
-import { startScale, isScaleSupported, type ScaleController } from '@/lib/pos/scale'
+import { startScale, isScaleSupported, type ScaleController, type ScaleProtocol } from '@/lib/pos/scale'
 
 interface Product {
   id: string
@@ -61,6 +62,8 @@ export default function PosPage() {
   const [scaleSupported, setScaleSupported] = useState(false)
   const [scaleConnected, setScaleConnected] = useState(false)
   const [liveWeight, setLiveWeight] = useState<number | null>(null)
+  const [scaleStable, setScaleStable] = useState(true)
+  const [scaleProto, setScaleProto] = useState<ScaleProtocol | null>(null)
   const scaleRef = useRef<ScaleController | null>(null)
 
   // Modales
@@ -138,6 +141,8 @@ export default function PosPage() {
       reusePort: reuse,
       onWeight: (kg) => setLiveWeight(kg),
       onStatus: (c) => setScaleConnected(c),
+      onStable: (st) => setScaleStable(st),
+      onProtocol: (pr) => setScaleProto(pr),
     })
     if (ctrl) scaleRef.current = ctrl
   }, [])
@@ -316,7 +321,7 @@ export default function PosPage() {
           )}
           {scaleSupported && (scaleConnected ? (
             <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-100 text-green-700 font-body text-xs font-medium">
-              <Scale size={13} /> Balanza{liveWeight != null ? ` · ${liveWeight.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : ''}
+              <Scale size={13} /> Balanza{liveWeight != null ? ` · ${liveWeight.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : scaleProto ? '' : ' · detectando…'}{!scaleStable && ' ·'}
             </span>
           ) : (
             <button onClick={() => connectScale(false)}
@@ -324,6 +329,12 @@ export default function PosPage() {
               <Cable size={13} /> Conectar balanza
             </button>
           ))}
+          {scaleSupported && (
+            <Link href="/admin/pos/balanza"
+              className="px-3 py-1.5 rounded-full border border-border text-warm-gray hover:text-charcoal font-body text-xs transition-colors">
+              Diagnóstico
+            </Link>
+          )}
           {session ? (
             <button onClick={() => setCloseCajaModal(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border text-charcoal font-body text-xs font-semibold hover:bg-cream transition-colors">
@@ -503,10 +514,12 @@ export default function PosPage() {
                 <div className="flex items-center justify-between gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
                   <span className="flex items-center gap-2 font-body text-sm text-green-800">
                     <Scale size={16} /> Balanza: <b>{liveWeight != null ? `${liveWeight.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : '—'}</b>
+                    {!scaleStable && <span className="text-amber-700">estabilizando…</span>}
                   </span>
                   <button
+                    disabled={liveWeight == null || !scaleStable}
                     onClick={() => liveWeight != null && setWeightInput(String(liveWeight))}
-                    className="px-3 py-1.5 rounded-lg bg-green-600 text-white font-body text-xs font-semibold hover:bg-green-700 transition-colors">
+                    className="px-3 py-1.5 rounded-lg bg-green-600 text-white font-body text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                     Usar peso
                   </button>
                 </div>

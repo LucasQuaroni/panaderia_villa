@@ -176,8 +176,13 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 - [x] Módulo Web Serial: abrir puerto (9600 8N1) + autoconexión + parseo de peso. **P2 · M** → `lib/pos/scale.ts`
 - [x] Integrar el peso al flujo de venta (con carga manual como respaldo). **P2 · S** → `app/admin/pos/page.tsx`
-- [ ] Comprar el adaptador USB–serie (kit Systel a PC). *(acción tuya)*
-- [ ] Probar con el cable puesto y ajustar `parseWeight` a la trama exacta de tu unidad. *(en el negocio)*
+- [x] Protocolo pregunta/respuesta: la Clipse no transmite sola, hay que pedirle el peso con `ENQ` (0x05) y leer `STX`+peso+`ETX`+XOR. **P2 · M** → `lib/pos/scale.ts`
+- [x] Autodetección de protocolo (Systel / Torrey / CAS / continuo) y manejo de `DC1` = peso inestable. **P2 · S**
+- [x] Pantalla de diagnóstico con tramas crudas, para la prueba en el mostrador. **P2 · S** → `app/admin/pos/balanza/page.tsx`
+- [x] Tests del parseo sin hardware. **P2 · S** → `npm run test:balanza`
+- [x] Guía de instalación para la PC Windows del mostrador. → `BALANZA_INSTALACION.md`
+- [ ] Comprar adaptador USB–serie **FTDI** + adaptador **null-modem** DE-9 M/H. *(acción tuya — ver `BALANZA_INSTALACION.md`)*
+- [ ] Probar con el cable puesto en `/admin/pos/balanza` y ajustar el parseo si la trama difiere. *(en el negocio)*
 
 **Criterio de aceptación:** al poner un producto en la balanza, el peso aparece solo en la pantalla de venta; si la lectura falla, se puede tipear.
 
