@@ -96,7 +96,7 @@ export default function AdminPricesPage() {
                             {p.name}
                             {p.active === false && <span className="text-warm-gray text-xs font-normal"> (no público)</span>}
                           </td>
-                          <td className="py-1.5 text-right font-body text-sm font-bold text-burgundy whitespace-nowrap">
+                          <td className="py-1.5 text-right font-num text-sm font-bold text-burgundy whitespace-nowrap">
                             {p.price !== null ? (
                               <>
                                 {fmtARS(p.price)}{' '}

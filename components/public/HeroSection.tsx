@@ -128,7 +128,7 @@ export default function HeroSection({ title, subtitle }: HeroSectionProps) {
             { value: "100%", label: "Ingredientes naturales" },
           ].map((stat) => (
             <div key={stat.label} className="text-center">
-              <div className="text-gold font-sans text-4xl md:text-5xl font-bold mb-1">
+              <div className="text-gold font-num text-4xl md:text-5xl font-bold mb-1">
                 {stat.value}
               </div>
               <div className="text-cream/80 font-body text-xs md:text-sm tracking-[0.2em] uppercase font-semibold">

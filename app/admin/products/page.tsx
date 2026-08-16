@@ -350,7 +350,7 @@ export default function AdminProductsPage() {
                     <span className="px-2 py-0.5 bg-burgundy/10 text-burgundy rounded-full font-body text-xs">{p.category}</span>
                   </td>
                   <td className="px-4 py-3 hidden md:table-cell">
-                    <span className="font-body text-sm text-charcoal">
+                    <span className="font-num text-sm text-charcoal">
                       {p.price !== null ? `$${p.price.toLocaleString('es-AR')} / ${p.unit}` : '—'}
                     </span>
                   </td>

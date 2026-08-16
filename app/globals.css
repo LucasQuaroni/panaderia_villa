@@ -115,6 +115,21 @@
   .font-body {
     font-family: var(--font-body);
   }
+  /*
+   * Cifras: precios, totales, pesos, cantidades.
+   *
+   * Playfair Display (font-sans) dibuja números de estilo antiguo — el 3, 4,
+   * 7 y 9 caen por debajo de la línea de base y el $ es muy ornamentado.
+   * Queda precioso en un título y es confuso en un mostrador. Todo lo que sea
+   * un número va con Inter, dígitos de ancho fijo (así las columnas de
+   * importes quedan alineadas y el total no "baila" al cambiar de cifra)
+   * y cero rebanado para no confundirlo con la O.
+   */
+  .font-num {
+    font-family: var(--font-body);
+    font-variant-numeric: tabular-nums slashed-zero;
+    font-feature-settings: 'tnum' 1, 'zero' 1;
+  }
   /* Noise texture overlay for hero */
   .texture-overlay::before {
     content: '';

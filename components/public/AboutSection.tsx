@@ -82,7 +82,7 @@ export default function AboutSection({ content }: AboutSectionProps) {
               transition={{ delay: 0.5, duration: 0.5 }}
               className="absolute -bottom-6 -right-6 bg-burgundy text-cream rounded-2xl p-5 shadow-xl z-20"
             >
-              <div className="font-sans text-3xl font-bold">+75</div>
+              <div className="font-num text-3xl font-bold">+75</div>
               <div className="font-body text-xs text-cream/80 mt-1">años horneando</div>
             </motion.div>
           </motion.div>

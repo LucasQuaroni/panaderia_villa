@@ -1,16 +1,28 @@
 'use client'
 
+/**
+ * Mostrador (POS).
+ *
+ * Pensado para vender rápido con teclado y mouse:
+ *   · La balanza se lee sola: al pesar, el peso entra en vivo y no hay que
+ *     apretar ningún botón para "tomarlo". Sólo se confirma con Enter.
+ *   · La barra de balanza queda siempre a la vista con el peso del plato.
+ *   · Atajos: escribir busca, Enter agrega, F2 cobra, F4 monto libre, Esc limpia.
+ *   · Al cobrar en efectivo se calcula el vuelto.
+ */
+
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Scale, Wifi, WifiOff,
   X, DoorOpen, DoorClosed, CheckCircle2, CircleDollarSign, RotateCcw, Star, Cable, EyeOff,
+  Keyboard, Banknote, ArrowLeft, Coins, AlertTriangle,
 } from 'lucide-react'
 import { addPending, removePending, pendingCount, type PendingSale } from '@/lib/pos/queue'
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
-import { startScale, isScaleSupported, type ScaleController, type ScaleProtocol } from '@/lib/pos/scale'
+import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
 
 interface Product {
   id: string
@@ -24,7 +36,7 @@ interface Product {
 
 interface CartItem {
   key: string
-  product_id: string
+  product_id: string | null
   name: string
   unit: string
   unit_price: number
@@ -43,6 +55,10 @@ const PAYMENT_METHODS = ['Efectivo', 'Débito', 'Crédito', 'Transferencia', 'QR
 const fmtARS = (n: number) =>
   new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 const fmtKg = (n: number) => `${n.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg`
+/** Peso con 3 decimales fijos, como lo muestra el visor de la balanza. */
+const fmtKgFixed = (n: number) =>
+  `${n.toLocaleString('es-AR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg`
+const parseNum = (s: string) => Number(s.replace(',', '.'))
 
 export default function PosPage() {
   const supabase = createClient()
@@ -58,23 +74,23 @@ export default function PosPage() {
   const [online, setOnline] = useState(true)
   const [pending, setPending] = useState(0)
 
-  // Balanza
-  const [scaleSupported, setScaleSupported] = useState(false)
-  const [scaleConnected, setScaleConnected] = useState(false)
-  const [liveWeight, setLiveWeight] = useState<number | null>(null)
-  const [scaleStable, setScaleStable] = useState(true)
-  const [scaleProto, setScaleProto] = useState<ScaleProtocol | null>(null)
-  const scaleRef = useRef<ScaleController | null>(null)
+  const scale = useScale()
 
   // Modales
   const [weighing, setWeighing] = useState<Product | null>(null)
-  const [weightInput, setWeightInput] = useState('')
   const [payOpen, setPayOpen] = useState(false)
+  const [freeOpen, setFreeOpen] = useState(false)
   const [openCajaModal, setOpenCajaModal] = useState(false)
   const [floatInput, setFloatInput] = useState('')
   const [closeCajaModal, setCloseCajaModal] = useState(false)
   const [flash, setFlash] = useState('')
-  const [lastSale, setLastSale] = useState<{ client_uuid: string; total: number; method: string } | null>(null)
+  const [lastSale, setLastSale] = useState<
+    { client_uuid: string; total: number; method: string; change: number | null } | null
+  >(null)
+
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  const anyModalOpen = Boolean(weighing) || payOpen || freeOpen || openCajaModal || closeCajaModal
 
   const refreshPending = useCallback(() => setPending(pendingCount()), [])
 
@@ -134,33 +150,15 @@ export default function PosPage() {
     }
   }, [trySync])
 
-  // Balanza: soporte + autoconexión (si el puerto ya fue autorizado antes).
-  const connectScale = useCallback(async (reuse: boolean) => {
-    if (scaleRef.current) return
-    const ctrl = await startScale({
-      reusePort: reuse,
-      onWeight: (kg) => setLiveWeight(kg),
-      onStatus: (c) => setScaleConnected(c),
-      onStable: (st) => setScaleStable(st),
-      onProtocol: (pr) => setScaleProto(pr),
-    })
-    if (ctrl) scaleRef.current = ctrl
-  }, [])
-
-  useEffect(() => {
-    const supported = isScaleSupported()
-    setScaleSupported(supported)
-    if (supported) connectScale(true)
-    return () => {
-      scaleRef.current?.stop()
-      scaleRef.current = null
-    }
-  }, [connectScale])
-
   const showFlash = (msg: string) => {
     setFlash(msg)
     setTimeout(() => setFlash(''), 3000)
   }
+
+  /** Devuelve el foco al buscador: después de cada acción se puede seguir tipeando. */
+  const focusSearch = useCallback(() => {
+    requestAnimationFrame(() => searchRef.current?.focus())
+  }, [])
 
   // ── Carrito ───────────────────────────────────────────────
   const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
@@ -182,7 +180,18 @@ export default function PosPage() {
     return set
   }, [products])
 
-  const addUnitProduct = (p: Product) => {
+  // Cuánto hay ya cargado de cada producto (se muestra como globo en la tarjeta).
+  const inCart = useMemo(() => {
+    const map = new Map<string, { qty: number; unit: string }>()
+    for (const i of cart) {
+      if (!i.product_id) continue
+      const prev = map.get(i.product_id)
+      map.set(i.product_id, { qty: (prev?.qty ?? 0) + i.quantity, unit: i.unit })
+    }
+    return map
+  }, [cart])
+
+  const addUnitProduct = useCallback((p: Product) => {
     setCart(prev => {
       const existing = prev.find(i => i.product_id === p.id && i.unit !== 'kg')
       if (existing) {
@@ -195,28 +204,35 @@ export default function PosPage() {
         unit_price: p.price!, quantity: 1, subtotal: p.price!,
       }]
     })
-  }
+  }, [])
 
-  const handleProductClick = (p: Product) => {
+  const handleProductClick = useCallback((p: Product) => {
     if (p.unit === 'kg') {
       setWeighing(p)
-      // Si la balanza está conectada, prellenamos con el peso actual.
-      setWeightInput(scaleConnected && liveWeight != null ? String(liveWeight) : '')
     } else {
       addUnitProduct(p)
+      setSearch('')
+      focusSearch()
     }
-  }
+  }, [addUnitProduct, focusSearch])
 
-  const confirmWeight = () => {
-    if (!weighing) return
-    const kg = Number(weightInput.replace(',', '.'))
-    if (!kg || kg <= 0) return
+  const addWeighed = (p: Product, kg: number) => {
     setCart(prev => [...prev, {
-      key: crypto.randomUUID(), product_id: weighing.id, name: weighing.name, unit: 'kg',
-      unit_price: weighing.price!, quantity: kg, subtotal: kg * weighing.price!,
+      key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
+      unit_price: p.price!, quantity: kg, subtotal: kg * p.price!,
     }])
     setWeighing(null)
-    setWeightInput('')
+    setSearch('')
+    focusSearch()
+  }
+
+  const addFreeAmount = (desc: string, amount: number) => {
+    setCart(prev => [...prev, {
+      key: crypto.randomUUID(), product_id: null, name: desc || 'Varios',
+      unit: 'unidad', unit_price: amount, quantity: 1, subtotal: amount,
+    }])
+    setFreeOpen(false)
+    focusSearch()
   }
 
   const changeQty = (key: string, delta: number) => {
@@ -233,10 +249,49 @@ export default function PosPage() {
 
   const total = useMemo(() => cart.reduce((s, i) => s + i.subtotal, 0), [cart])
 
+  // ── Atajos de teclado ─────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (anyModalOpen) return
+      const el = e.target as HTMLElement | null
+      const typing = !!el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+
+      if (e.key === 'F2') {
+        e.preventDefault()
+        if (cart.length > 0 && session) setPayOpen(true)
+        return
+      }
+      if (e.key === 'F4') {
+        e.preventDefault()
+        if (session) setFreeOpen(true)
+        return
+      }
+      if (e.key === 'Escape') {
+        setSearch('')
+        setLetter(null)
+        focusSearch()
+        return
+      }
+      // Cualquier tecla imprimible manda el foco al buscador: se puede
+      // empezar a escribir el producto sin tocar el mouse.
+      if (!typing && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        searchRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [anyModalOpen, cart.length, session, focusSearch])
+
+  // Foco inicial en el buscador apenas hay caja abierta.
+  useEffect(() => {
+    if (!loading && session && !anyModalOpen) focusSearch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, session])
+
   // ── Caja ──────────────────────────────────────────────────
   const openCaja = async () => {
     if (!userId) return
-    const opening = Number(floatInput.replace(',', '.')) || 0
+    const opening = parseNum(floatInput) || 0
     const { data } = await supabase
       .from('cash_sessions')
       .insert({ opened_by: userId, opening_float: opening, status: 'open' })
@@ -248,10 +303,11 @@ export default function PosPage() {
     }
     setOpenCajaModal(false)
     setFloatInput('')
+    focusSearch()
   }
 
   // ── Cobrar ────────────────────────────────────────────────
-  const charge = async (method: string) => {
+  const charge = async (method: string, change: number | null) => {
     if (cart.length === 0 || !session) return
     const sale: PendingSale = {
       client_uuid: crypto.randomUUID(),
@@ -272,7 +328,8 @@ export default function PosPage() {
     refreshPending()
     clearCart()
     setPayOpen(false)
-    setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, method })
+    setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, method, change })
+    focusSearch()
     trySync()                 // 2) intento de sincronización
   }
 
@@ -296,7 +353,7 @@ export default function PosPage() {
   return (
     <div className="max-w-6xl mx-auto">
       {/* Barra superior: caja + conexión */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h1 className="font-sans text-2xl font-bold text-charcoal">Mostrador</h1>
           {session ? (
@@ -319,22 +376,6 @@ export default function PosPage() {
               {pending} por subir
             </span>
           )}
-          {scaleSupported && (scaleConnected ? (
-            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-100 text-green-700 font-body text-xs font-medium">
-              <Scale size={13} /> Balanza{liveWeight != null ? ` · ${liveWeight.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : scaleProto ? '' : ' · detectando…'}{!scaleStable && ' ·'}
-            </span>
-          ) : (
-            <button onClick={() => connectScale(false)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border text-warm-gray hover:text-charcoal font-body text-xs font-medium transition-colors">
-              <Cable size={13} /> Conectar balanza
-            </button>
-          ))}
-          {scaleSupported && (
-            <Link href="/admin/pos/balanza"
-              className="px-3 py-1.5 rounded-full border border-border text-warm-gray hover:text-charcoal font-body text-xs transition-colors">
-              Diagnóstico
-            </Link>
-          )}
           {session ? (
             <button onClick={() => setCloseCajaModal(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border text-charcoal font-body text-xs font-semibold hover:bg-cream transition-colors">
@@ -349,6 +390,13 @@ export default function PosPage() {
         </div>
       </div>
 
+      {/* Balanza siempre a la vista */}
+      {session && (
+        <div className="sticky top-0 z-20 -mx-2 px-2 pt-1 pb-3 bg-cream-dark/95 backdrop-blur-sm">
+          <ScaleBar scale={scale} />
+        </div>
+      )}
+
       {flash && (
         <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">
           <CheckCircle2 size={18} /> {flash}
@@ -356,10 +404,15 @@ export default function PosPage() {
       )}
 
       {lastSale && (
-        <div className="mb-4 flex items-center justify-between gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">
           <span className="flex items-center gap-2">
-            <CheckCircle2 size={18} /> Última venta registrada · {fmtARS(lastSale.total)} · {lastSale.method}
+            <CheckCircle2 size={18} /> Venta registrada · {fmtARS(lastSale.total)} · {lastSale.method}
           </span>
+          {lastSale.change != null && lastSale.change > 0 && (
+            <span className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-green-300 font-num text-base font-bold text-green-800">
+              <Coins size={16} /> Vuelto {fmtARS(lastSale.change)}
+            </span>
+          )}
           <button onClick={undoLastSale} className="flex items-center gap-1 text-red-600 hover:underline font-semibold">
             <RotateCcw size={14} /> Deshacer
           </button>
@@ -379,13 +432,33 @@ export default function PosPage() {
         <div className="grid lg:grid-cols-[1fr_380px] gap-5">
           {/* Selector de productos */}
           <div>
-            <div className="relative mb-3">
-              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
-              <input
-                type="text" value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Buscar producto..."
-                className="w-full pl-10 pr-3 py-3 border border-border rounded-xl font-body text-base focus:outline-none focus:border-burgundy bg-white"
-              />
+            <div className="flex gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
+                <input
+                  ref={searchRef}
+                  type="text" value={search} onChange={e => setSearch(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && filtered.length > 0) {
+                      e.preventDefault()
+                      handleProductClick(filtered[0])
+                    }
+                  }}
+                  placeholder="Buscar producto y Enter para agregar..."
+                  className="w-full pl-10 pr-3 py-3 border border-border rounded-xl font-body text-base focus:outline-none focus:border-burgundy bg-white"
+                />
+                {search && (
+                  <button onClick={() => { setSearch(''); focusSearch() }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-warm-gray hover:text-charcoal">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              <button onClick={() => setFreeOpen(true)}
+                title="Cobrar un importe suelto (F4)"
+                className="flex items-center gap-1.5 px-4 rounded-xl border border-border bg-white text-charcoal font-body text-sm font-semibold hover:border-burgundy hover:text-burgundy transition-colors whitespace-nowrap">
+                <Banknote size={16} /> Monto libre
+              </button>
             </div>
 
             {/* Barra de letras: tocá una letra para ver los que empiezan con ella */}
@@ -415,38 +488,62 @@ export default function PosPage() {
                 )
               })}
             </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {filtered.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => handleProductClick(p)}
-                  className="relative flex flex-col items-start justify-between text-left p-4 bg-white rounded-2xl border border-border hover:border-burgundy hover:shadow-md transition-all min-h-[92px]"
-                >
-                  {p.featured && <Star size={13} className="absolute top-2 right-2 text-gold fill-gold" />}
-                  <span className="font-body text-sm font-semibold text-charcoal leading-snug line-clamp-2 pr-4">{p.name}</span>
-                  {p.active === false && (
-                    <span className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warm-gray/10 text-warm-gray font-body text-[10px] font-medium">
-                      <EyeOff size={10} /> No público
+              {filtered.map((p, idx) => {
+                const loaded = inCart.get(p.id)
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => handleProductClick(p)}
+                    className={`relative flex flex-col items-start justify-between text-left p-4 bg-white rounded-2xl border transition-all min-h-[92px] hover:border-burgundy hover:shadow-md ${
+                      idx === 0 && search ? 'border-burgundy ring-2 ring-burgundy/20' : 'border-border'
+                    }`}
+                  >
+                    {p.featured && !loaded && <Star size={13} className="absolute top-2 right-2 text-gold fill-gold" />}
+                    {loaded && (
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-full bg-burgundy text-cream font-body text-[10px] font-bold">
+                        {p.unit === 'kg' ? fmtKg(loaded.qty) : `${loaded.qty}`}
+                      </span>
+                    )}
+                    <span className="font-body text-sm font-semibold text-charcoal leading-snug line-clamp-2 pr-8">{p.name}</span>
+                    {p.active === false && (
+                      <span className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warm-gray/10 text-warm-gray font-body text-[10px] font-medium">
+                        <EyeOff size={10} /> No público
+                      </span>
+                    )}
+                    <span className="mt-2 flex items-center gap-1.5">
+                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(p.price!)}</span>
+                      <span className="font-body text-xs text-warm-gray">{p.unit === 'kg' ? '/ kg' : 'c/u'}</span>
+                      {p.unit === 'kg' && <Scale size={13} className="text-warm-gray" />}
                     </span>
-                  )}
-                  <span className="mt-2 flex items-center gap-1.5">
-                    <span className="font-sans text-base font-bold text-burgundy">{fmtARS(p.price!)}</span>
-                    <span className="font-body text-xs text-warm-gray">{p.unit === 'kg' ? '/ kg' : 'c/u'}</span>
-                    {p.unit === 'kg' && <Scale size={13} className="text-warm-gray" />}
-                  </span>
-                </button>
-              ))}
+                  </button>
+                )
+              })}
               {filtered.length === 0 && (
                 <div className="col-span-full text-center py-10 text-warm-gray font-body text-sm">Sin resultados.</div>
               )}
             </div>
+
+            {/* Ayuda de atajos */}
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 font-body text-[11px] text-warm-gray">
+              <span className="flex items-center gap-1.5"><Keyboard size={13} /> Atajos:</span>
+              <span><Tecla>Escribí</Tecla> busca</span>
+              <span><Tecla>Enter</Tecla> agrega el primero</span>
+              <span><Tecla>F2</Tecla> cobrar</span>
+              <span><Tecla>F4</Tecla> monto libre</span>
+              <span><Tecla>Esc</Tecla> limpiar</span>
+            </div>
           </div>
 
           {/* Carrito */}
-          <div className="bg-white rounded-2xl border border-border shadow-sm flex flex-col h-fit lg:sticky lg:top-4">
+          <div className="bg-white rounded-2xl border border-border shadow-sm flex flex-col h-fit lg:sticky lg:top-28">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <span className="flex items-center gap-2 font-sans font-bold text-charcoal">
                 <ShoppingCart size={18} /> Carrito
+                {cart.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-cream-dark font-body text-xs text-warm-gray">{cart.length}</span>
+                )}
               </span>
               {cart.length > 0 && (
                 <button onClick={clearCart} className="font-body text-xs text-warm-gray hover:text-red-500 transition-colors">
@@ -458,13 +555,13 @@ export default function PosPage() {
             <div className="flex-1 overflow-y-auto max-h-[46vh] divide-y divide-border/60">
               {cart.length === 0 ? (
                 <div className="text-center py-12 text-warm-gray font-body text-sm px-4">
-                  Tocá un producto para agregarlo.
+                  Buscá o tocá un producto para agregarlo.
                 </div>
               ) : cart.map(i => (
                 <div key={i.key} className="flex items-center gap-2 px-4 py-3">
                   <div className="flex-1 min-w-0">
                     <div className="font-body text-sm font-semibold text-charcoal truncate">{i.name}</div>
-                    <div className="font-body text-xs text-warm-gray">
+                    <div className="font-num text-xs text-warm-gray">
                       {i.unit === 'kg' ? `${fmtKg(i.quantity)} × ${fmtARS(i.unit_price)}/kg` : `${i.quantity} × ${fmtARS(i.unit_price)}`}
                     </div>
                   </div>
@@ -474,7 +571,7 @@ export default function PosPage() {
                       <button onClick={() => changeQty(i.key, 1)} className="p-1 rounded-md border border-border text-warm-gray hover:text-charcoal"><Plus size={13} /></button>
                     </div>
                   )}
-                  <div className="w-20 text-right font-body text-sm font-bold text-charcoal">{fmtARS(i.subtotal)}</div>
+                  <div className="w-20 text-right font-num text-sm font-bold text-charcoal">{fmtARS(i.subtotal)}</div>
                   <button onClick={() => removeItem(i.key)} className="p-1 text-warm-gray hover:text-red-500"><Trash2 size={14} /></button>
                 </div>
               ))}
@@ -483,14 +580,14 @@ export default function PosPage() {
             <div className="border-t border-border p-4">
               <div className="flex items-center justify-between mb-3">
                 <span className="font-body text-sm text-warm-gray">Total</span>
-                <span className="font-sans text-2xl font-bold text-burgundy">{fmtARS(total)}</span>
+                <span className="font-num text-3xl font-bold text-burgundy">{fmtARS(total)}</span>
               </div>
               <button
                 onClick={() => setPayOpen(true)}
                 disabled={cart.length === 0}
                 className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors"
               >
-                <CircleDollarSign size={20} /> Cobrar
+                <CircleDollarSign size={20} /> Cobrar <span className="font-normal opacity-70 text-xs">(F2)</span>
               </button>
             </div>
           </div>
@@ -499,83 +596,30 @@ export default function PosPage() {
 
       {/* Modal: pesar */}
       {weighing && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setWeighing(null)}>
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-5 border-b border-border">
-              <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2"><Scale size={18} /> Pesar</h2>
-              <button onClick={() => setWeighing(null)} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
-            </div>
-            <div className="p-5 flex flex-col gap-4">
-              <div>
-                <div className="font-body text-sm font-semibold text-charcoal">{weighing.name}</div>
-                <div className="font-body text-xs text-warm-gray">{fmtARS(weighing.price!)} / kg</div>
-              </div>
-              {scaleConnected && (
-                <div className="flex items-center justify-between gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-3">
-                  <span className="flex items-center gap-2 font-body text-sm text-green-800">
-                    <Scale size={16} /> Balanza: <b>{liveWeight != null ? `${liveWeight.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : '—'}</b>
-                    {!scaleStable && <span className="text-amber-700">estabilizando…</span>}
-                  </span>
-                  <button
-                    disabled={liveWeight == null || !scaleStable}
-                    onClick={() => liveWeight != null && setWeightInput(String(liveWeight))}
-                    className="px-3 py-1.5 rounded-lg bg-green-600 text-white font-body text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                    Usar peso
-                  </button>
-                </div>
-              )}
-              <div className="flex flex-col gap-1">
-                <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Peso en kg</label>
-                <input
-                  type="number" inputMode="decimal" min="0" step="0.001" autoFocus
-                  value={weightInput}
-                  onChange={e => setWeightInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') confirmWeight() }}
-                  placeholder="Ej: 0.500"
-                  className="px-4 py-3 border border-border rounded-xl font-body text-lg focus:outline-none focus:border-burgundy"
-                />
-                {!scaleConnected && (
-                  <span className="font-body text-xs text-warm-gray mt-1">
-                    Cuando conectes la balanza (botón “Conectar balanza”), el peso se completa solo.
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center justify-between bg-cream-dark rounded-xl px-4 py-3">
-                <span className="font-body text-sm text-warm-gray">Subtotal</span>
-                <span className="font-sans text-xl font-bold text-burgundy">
-                  {fmtARS((Number(weightInput.replace(',', '.')) || 0) * weighing.price!)}
-                </span>
-              </div>
-              <button onClick={confirmWeight}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark transition-colors">
-                <Plus size={16} /> Agregar al carrito
-              </button>
-            </div>
-          </div>
-        </div>
+        <WeighModal
+          key={weighing.id}
+          product={weighing}
+          scale={scale}
+          onCancel={() => { setWeighing(null); focusSearch() }}
+          onConfirm={kg => addWeighed(weighing, kg)}
+        />
       )}
 
-      {/* Modal: cobrar (elegir medio de pago) */}
+      {/* Modal: cobrar */}
       {payOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setPayOpen(false)}>
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-5 border-b border-border">
-              <h2 className="font-sans text-lg font-bold text-charcoal">Cobrar {fmtARS(total)}</h2>
-              <button onClick={() => setPayOpen(false)} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
-            </div>
-            <div className="p-5">
-              <p className="font-body text-xs text-warm-gray uppercase tracking-wide mb-3">¿Cómo pagó?</p>
-              <div className="grid grid-cols-2 gap-3">
-                {PAYMENT_METHODS.map(m => (
-                  <button key={m} onClick={() => charge(m)}
-                    className="px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors">
-                    {m}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
+        <PayModal
+          total={total}
+          onCancel={() => { setPayOpen(false); focusSearch() }}
+          onCharge={charge}
+        />
+      )}
+
+      {/* Modal: monto libre */}
+      {freeOpen && (
+        <FreeAmountModal
+          onCancel={() => { setFreeOpen(false); focusSearch() }}
+          onConfirm={addFreeAmount}
+        />
       )}
 
       {/* Modal: abrir caja */}
@@ -618,6 +662,441 @@ export default function PosPage() {
           syncFirst={trySync}
         />
       )}
+    </div>
+  )
+}
+
+// ── Piezas de interfaz ──────────────────────────────────────
+
+function Tecla({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="px-1.5 py-0.5 rounded border border-border bg-white font-body text-[10px] font-semibold text-charcoal">
+      {children}
+    </kbd>
+  )
+}
+
+/**
+ * Barra de balanza: el peso del plato siempre a la vista, con el estado de la
+ * lectura. Es la referencia visual del cajero — si acá se ve el peso, el
+ * modal de pesar lo va a tomar solo.
+ */
+function ScaleBar({ scale }: { scale: ScaleState }) {
+  if (!scale.supported) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-border font-body text-xs text-warm-gray">
+        <AlertTriangle size={14} className="text-amber-500" />
+        Este navegador no lee la balanza. Para usarla, abrí el mostrador en Chrome o Edge de escritorio.
+      </div>
+    )
+  }
+
+  if (!scale.connected) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-white border border-border">
+        <span className="flex items-center gap-2 font-body text-sm text-warm-gray">
+          <Scale size={18} /> Balanza desconectada — se puede vender igual escribiendo el peso a mano.
+        </span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => scale.connect(false)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-burgundy text-cream font-body text-xs font-bold hover:bg-burgundy-dark transition-colors">
+            <Cable size={14} /> Conectar balanza
+          </button>
+          <Link href="/admin/pos/balanza"
+            className="px-3 py-1.5 rounded-lg border border-border text-warm-gray hover:text-charcoal font-body text-xs transition-colors">
+            Diagnóstico
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  const estado = !scale.live
+    ? { txt: 'Sin lectura', cls: 'bg-red-100 text-red-700' }
+    : !scale.hasLoad
+      ? { txt: 'Plato vacío', cls: 'bg-warm-gray/10 text-warm-gray' }
+      : scale.stable
+        ? { txt: 'Peso estable', cls: 'bg-green-100 text-green-700' }
+        : { txt: 'Estabilizando…', cls: 'bg-amber-100 text-amber-700' }
+
+  return (
+    <div className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-white border shadow-sm transition-colors ${
+      scale.stable && scale.hasLoad ? 'border-green-300' : 'border-border'
+    }`}>
+      <div className="flex items-center gap-3">
+        <Scale size={20} className={scale.live ? 'text-green-600' : 'text-red-500'} />
+        <span className={`font-num text-2xl font-bold ${scale.live ? 'text-charcoal' : 'text-warm-gray/50'}`}>
+          {scale.weight != null && scale.live ? fmtKgFixed(scale.weight) : '—'}
+        </span>
+        <span className={`px-2.5 py-1 rounded-full font-body text-[11px] font-semibold ${estado.cls}`}>
+          {estado.txt}
+        </span>
+        {scale.tare > 0 && (
+          <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700 font-body text-[11px] font-semibold">
+            Tara {fmtKgFixed(scale.tare)}
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        {scale.tare > 0 ? (
+          <button onClick={scale.clearTare}
+            className="px-3 py-1.5 rounded-lg border border-border text-warm-gray hover:text-charcoal font-body text-xs font-semibold transition-colors">
+            Quitar tara
+          </button>
+        ) : (
+          <button onClick={scale.applyTare} disabled={!scale.live || scale.raw == null}
+            title="Poner en cero con el envase sobre el plato"
+            className="px-3 py-1.5 rounded-lg border border-border text-warm-gray hover:text-charcoal font-body text-xs font-semibold transition-colors disabled:opacity-40">
+            Tara
+          </button>
+        )}
+        <Link href="/admin/pos/balanza"
+          className="px-3 py-1.5 rounded-lg border border-border text-warm-gray hover:text-charcoal font-body text-xs transition-colors">
+          Diagnóstico
+        </Link>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Modal de pesado con lectura en vivo.
+ *
+ * El peso de la balanza entra solo y se va actualizando mientras cambia el
+ * plato: no hay que apretar nada para "tomarlo". Si el cajero escribe el peso
+ * a mano, la pantalla deja de pisarlo hasta que él pida volver a la balanza.
+ */
+function WeighModal({
+  product, scale, onCancel, onConfirm,
+}: {
+  product: Product
+  scale: ScaleState
+  onCancel: () => void
+  onConfirm: (kg: number) => void
+}) {
+  const [input, setInput] = useState('')
+  const [manual, setManual] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+
+  const auto = scale.connected && scale.live && !manual
+  const liveKg = scale.weight
+
+  // El peso de la balanza se copia solo al campo mientras nadie lo escriba a mano.
+  useEffect(() => {
+    if (!auto) return
+    if (liveKg == null) return
+    setInput(liveKg > EMPTY_KG ? liveKg.toFixed(3) : '')
+  }, [auto, liveKg])
+
+  const kg = parseNum(input)
+  const valido = !isNaN(kg) && kg > 0
+  // En automático esperamos a que el peso se asiente; a mano se confirma siempre.
+  const puedeConfirmar = valido && (manual || !scale.connected || scale.stable)
+
+  const confirmar = useCallback(() => {
+    const v = parseNum(input)
+    if (!v || v <= 0) return
+    if (!(manual || !scale.connected || scale.stable)) return
+    onConfirm(Math.round(v * 1000) / 1000)
+  }, [input, manual, scale.connected, scale.stable, onConfirm])
+
+  // Enter confirma y Esc cancela, esté donde esté el foco.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); confirmar() }
+      if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [confirmar, onCancel])
+
+  // Sin balanza, el foco arranca en el campo para tipear el peso directo.
+  useEffect(() => {
+    if (!scale.connected) inputRef.current?.focus()
+  }, [scale.connected])
+
+  // Con balanza, cuando el peso queda firme el foco pasa al botón: Enter cobra.
+  useEffect(() => {
+    if (auto && puedeConfirmar) confirmRef.current?.focus()
+  }, [auto, puedeConfirmar])
+
+  const estado = !scale.connected
+    ? { txt: 'Balanza desconectada — escribí el peso', cls: 'text-warm-gray', box: 'bg-cream-dark border-border' }
+    : manual
+      ? { txt: 'Peso escrito a mano', cls: 'text-blue-700', box: 'bg-blue-50 border-blue-200' }
+      : !scale.live
+        ? { txt: 'Sin lectura de la balanza', cls: 'text-red-600', box: 'bg-red-50 border-red-200' }
+        : !scale.hasLoad
+          ? { txt: 'Poné el producto en el plato', cls: 'text-warm-gray', box: 'bg-cream-dark border-border' }
+          : scale.stable
+            ? { txt: 'Peso tomado de la balanza ✓', cls: 'text-green-700', box: 'bg-green-50 border-green-200' }
+            : { txt: 'Estabilizando…', cls: 'text-amber-700', box: 'bg-amber-50 border-amber-200' }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2"><Scale size={18} /> Pesar</h2>
+          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+        </div>
+
+        <div className="p-5 flex flex-col gap-4">
+          <div>
+            <div className="font-body text-base font-semibold text-charcoal">{product.name}</div>
+            <div className="font-body text-xs text-warm-gray">{fmtARS(product.price!)} / kg</div>
+          </div>
+
+          {/* Visor: el peso que se va a cargar */}
+          <div className={`rounded-2xl border px-5 py-4 flex flex-col items-center gap-1 transition-colors ${estado.box}`}>
+            <span className="font-num text-5xl font-bold text-charcoal leading-none">
+              {valido ? kg.toLocaleString('es-AR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) : '0,000'}
+              <span className="text-2xl font-semibold text-warm-gray ml-1">kg</span>
+            </span>
+            <span className={`font-body text-xs font-semibold ${estado.cls}`}>{estado.txt}</span>
+            {scale.tare > 0 && !manual && (
+              <span className="font-body text-[11px] text-blue-700">Descontando tara de {fmtKgFixed(scale.tare)}</span>
+            )}
+          </div>
+
+          {/* Corrección a mano */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <label className="font-body text-xs text-warm-gray uppercase tracking-wide">
+                {scale.connected ? 'Corregir a mano' : 'Peso en kg'}
+              </label>
+              {manual && scale.connected && (
+                <button
+                  onClick={() => { setManual(false); inputRef.current?.blur() }}
+                  className="font-body text-xs text-burgundy font-semibold hover:underline">
+                  Volver al peso de la balanza
+                </button>
+              )}
+            </div>
+            <input
+              ref={inputRef}
+              type="number" inputMode="decimal" min="0" step="0.001"
+              value={input}
+              onChange={e => { setManual(true); setInput(e.target.value) }}
+              placeholder="Ej: 0.500"
+              className="px-4 py-3 border border-border rounded-xl font-body text-lg focus:outline-none focus:border-burgundy"
+            />
+          </div>
+
+          <div className="flex items-center justify-between bg-cream-dark rounded-xl px-4 py-3">
+            <span className="font-body text-sm text-warm-gray">Subtotal</span>
+            <span className="font-num text-2xl font-bold text-burgundy">
+              {fmtARS((valido ? kg : 0) * product.price!)}
+            </span>
+          </div>
+
+          <button
+            ref={confirmRef}
+            onClick={confirmar}
+            disabled={!puedeConfirmar}
+            className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
+            <Plus size={18} />
+            {!valido ? 'Esperando peso…' : !puedeConfirmar ? 'Estabilizando…' : 'Agregar al carrito'}
+            {puedeConfirmar && <span className="font-normal opacity-70 text-xs">(Enter)</span>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Cobro. Los medios que no son efectivo cierran la venta de una;
+ * en efectivo se pide con cuánto paga y se muestra el vuelto en grande.
+ */
+function PayModal({
+  total, onCancel, onCharge,
+}: {
+  total: number
+  onCancel: () => void
+  onCharge: (method: string, change: number | null) => void
+}) {
+  const [cashStep, setCashStep] = useState(false)
+  const [paidWith, setPaidWith] = useState('')
+  const cashRef = useRef<HTMLInputElement>(null)
+
+  const paid = parseNum(paidWith)
+  const paidOk = !isNaN(paid) && paid > 0
+  const change = paidOk ? paid - total : 0
+  const alcanza = paidOk && change >= -0.5
+
+  // Billetes con los que suele pagar la gente, siempre por encima del total.
+  const sugerencias = useMemo(() => {
+    const set = new Set<number>()
+    const up = (m: number) => Math.ceil(total / m) * m
+    for (const m of [1000, 5000, 10000]) set.add(up(m))
+    for (const n of [1000, 2000, 5000, 10000, 20000]) if (n > total) set.add(n)
+    return [...set].filter(v => v > total).sort((a, b) => a - b).slice(0, 5)
+  }, [total])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (cashStep) setCashStep(false)
+        else onCancel()
+      }
+      if (e.key === 'Enter' && cashStep && alcanza) {
+        e.preventDefault()
+        onCharge('Efectivo', Math.max(0, Math.round(change)))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cashStep, alcanza, change, onCancel, onCharge])
+
+  useEffect(() => { if (cashStep) cashRef.current?.focus() }, [cashStep])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2">
+            {cashStep && (
+              <button onClick={() => setCashStep(false)} className="text-warm-gray hover:text-charcoal"><ArrowLeft size={18} /></button>
+            )}
+            Cobrar <span className="font-num">{fmtARS(total)}</span>
+          </h2>
+          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+        </div>
+
+        {!cashStep ? (
+          <div className="p-5">
+            <p className="font-body text-xs text-warm-gray uppercase tracking-wide mb-3">¿Cómo pagó?</p>
+            <button
+              autoFocus
+              onClick={() => setCashStep(true)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-5 mb-3 rounded-xl bg-burgundy text-cream font-body text-lg font-bold hover:bg-burgundy-dark transition-colors">
+              <Banknote size={22} /> Efectivo
+            </button>
+            <div className="grid grid-cols-2 gap-3">
+              {PAYMENT_METHODS.filter(m => m !== 'Efectivo').map(m => (
+                <button key={m} onClick={() => onCharge(m, null)}
+                  className="px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors">
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <label className="font-body text-xs text-warm-gray uppercase tracking-wide">¿Con cuánto paga?</label>
+              <input
+                ref={cashRef}
+                type="number" inputMode="decimal" min="0" step="any"
+                value={paidWith}
+                onChange={e => setPaidWith(e.target.value)}
+                placeholder={String(Math.ceil(total))}
+                className="px-4 py-3 border border-border rounded-xl font-num text-2xl font-bold focus:outline-none focus:border-burgundy"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => setPaidWith(String(Math.round(total)))}
+                className="px-3 py-2 rounded-lg border border-border bg-white font-body text-sm font-semibold text-charcoal hover:border-burgundy hover:text-burgundy transition-colors">
+                Justo
+              </button>
+              {sugerencias.map(v => (
+                <button key={v} onClick={() => setPaidWith(String(v))}
+                  className="px-3 py-2 rounded-lg border border-border bg-white font-num text-sm font-semibold text-charcoal hover:border-burgundy hover:text-burgundy transition-colors">
+                  {fmtARS(v)}
+                </button>
+              ))}
+            </div>
+
+            <div className={`rounded-2xl px-5 py-4 flex items-center justify-between transition-colors ${
+              !paidOk ? 'bg-cream-dark' : alcanza ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
+            }`}>
+              <span className="font-body text-sm text-warm-gray">Vuelto</span>
+              <span className={`font-num text-4xl font-bold ${
+                !paidOk ? 'text-warm-gray/40' : alcanza ? 'text-green-700' : 'text-red-600'
+              }`}>
+                {!paidOk ? '—' : alcanza ? fmtARS(Math.max(0, change)) : `Falta ${fmtARS(-change)}`}
+              </span>
+            </div>
+
+            <button
+              onClick={() => onCharge('Efectivo', paidOk ? Math.max(0, Math.round(change)) : null)}
+              disabled={paidOk && !alcanza}
+              className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
+              <CircleDollarSign size={20} /> Cobrar en efectivo
+              <span className="font-normal opacity-70 text-xs">(Enter)</span>
+            </button>
+            <p className="font-body text-[11px] text-warm-gray text-center">
+              Podés cobrar sin cargar con cuánto paga: el vuelto es sólo una ayuda.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Importe suelto: para lo que no está en la lista (encargue, adicional, etc.). */
+function FreeAmountModal({
+  onCancel, onConfirm,
+}: {
+  onCancel: () => void
+  onConfirm: (desc: string, amount: number) => void
+}) {
+  const [desc, setDesc] = useState('')
+  const [amount, setAmount] = useState('')
+  const value = parseNum(amount)
+  const valido = !isNaN(value) && value > 0
+
+  const confirmar = () => { if (valido) onConfirm(desc.trim(), Math.round(value * 100) / 100) }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onCancel() } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2"><Banknote size={18} /> Monto libre</h2>
+          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+        </div>
+        <div className="p-5 flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Importe</label>
+            <input
+              type="number" inputMode="decimal" min="0" step="any" autoFocus
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmar() }}
+              placeholder="0"
+              className="px-4 py-3 border border-border rounded-xl font-num text-2xl font-bold focus:outline-none focus:border-burgundy"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Detalle (opcional)</label>
+            <input
+              type="text" value={desc}
+              onChange={e => setDesc(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmar() }}
+              placeholder="Varios"
+              className="px-4 py-3 border border-border rounded-xl font-body text-base focus:outline-none focus:border-burgundy"
+            />
+          </div>
+          <button onClick={confirmar} disabled={!valido}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
+            <Plus size={16} /> Agregar al carrito
+          </button>
+          <p className="font-body text-[11px] text-warm-gray text-center">
+            No descuenta stock: se registra como renglón suelto de la venta.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -672,7 +1151,7 @@ function CloseCajaModal({
   const totalSales = Object.values(byMethod).reduce((s, n) => s + n, 0)
   const cashSales = byMethod['Efectivo'] ?? 0
   const expectedCash = session.opening_float + cashSales
-  const countedNum = Number(counted.replace(',', '.')) || 0
+  const countedNum = parseNum(counted) || 0
   const diff = counted !== '' ? countedNum - expectedCash : 0
   const fmt = (n: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 
@@ -701,11 +1180,11 @@ function CloseCajaModal({
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-cream-dark rounded-xl p-3">
                 <div className="font-body text-xs text-warm-gray">Ventas</div>
-                <div className="font-sans text-xl font-bold text-charcoal">{count}</div>
+                <div className="font-num text-xl font-bold text-charcoal">{count}</div>
               </div>
               <div className="bg-cream-dark rounded-xl p-3">
                 <div className="font-body text-xs text-warm-gray">Ticket promedio</div>
-                <div className="font-sans text-xl font-bold text-charcoal">{fmt(ticketAvg)}</div>
+                <div className="font-num text-xl font-bold text-charcoal">{fmt(ticketAvg)}</div>
               </div>
             </div>
 
@@ -722,24 +1201,24 @@ function CloseCajaModal({
               ) : Object.entries(byMethod).map(([m, v]) => (
                 <div key={m} className="flex items-center justify-between px-4 py-2.5">
                   <span className="font-body text-sm text-charcoal">{m}</span>
-                  <span className="font-body text-sm font-semibold text-charcoal">{fmt(v)}</span>
+                  <span className="font-num text-sm font-semibold text-charcoal">{fmt(v)}</span>
                 </div>
               ))}
               <div className="flex items-center justify-between px-4 py-2.5 bg-cream/50">
                 <span className="font-body text-sm font-bold text-charcoal">Total vendido</span>
-                <span className="font-body text-sm font-bold text-burgundy">{fmt(totalSales)}</span>
+                <span className="font-num text-sm font-bold text-burgundy">{fmt(totalSales)}</span>
               </div>
             </div>
 
             <div className="bg-cream-dark rounded-xl p-4 flex flex-col gap-2">
               <div className="flex justify-between font-body text-sm text-warm-gray">
-                <span>Fondo inicial</span><span>{fmt(session.opening_float)}</span>
+                <span>Fondo inicial</span><span className="font-num">{fmt(session.opening_float)}</span>
               </div>
               <div className="flex justify-between font-body text-sm text-warm-gray">
-                <span>+ Ventas en efectivo</span><span>{fmt(cashSales)}</span>
+                <span>+ Ventas en efectivo</span><span className="font-num">{fmt(cashSales)}</span>
               </div>
               <div className="flex justify-between font-body text-sm font-semibold text-charcoal border-t border-border pt-2">
-                <span>Efectivo esperado</span><span>{fmt(expectedCash)}</span>
+                <span>Efectivo esperado</span><span className="font-num">{fmt(expectedCash)}</span>
               </div>
             </div>
 

@@ -397,7 +397,7 @@ export default function AdminCostsPage() {
                       </td>
                       <td className="px-4 py-3 hidden sm:table-cell font-body text-sm text-warm-gray">{m.supplier ?? '—'}</td>
                       <td className="px-4 py-3">
-                        <span className="font-body text-sm font-bold text-burgundy">{fmtARS(m.unit_price)}</span>
+                        <span className="font-num text-sm font-bold text-burgundy">{fmtARS(m.unit_price)}</span>
                         <span className="font-body text-xs text-warm-gray ml-1">/ {m.unit}</span>
                       </td>
                       <td className="px-4 py-3 hidden md:table-cell font-body text-sm text-warm-gray">
@@ -573,15 +573,15 @@ export default function AdminCostsPage() {
                       <div className="bg-cream-dark rounded-xl p-4 grid grid-cols-3 gap-4 text-center">
                         <div>
                           <div className="font-body text-xs text-warm-gray uppercase tracking-wide mb-1">Costo total receta</div>
-                          <div className="font-sans text-lg font-bold text-charcoal">{fmtARS(cost)}</div>
+                          <div className="font-num text-lg font-bold text-charcoal">{fmtARS(cost)}</div>
                         </div>
                         <div>
                           <div className="font-body text-xs text-warm-gray uppercase tracking-wide mb-1">Costo por unidad</div>
-                          <div className="font-sans text-lg font-bold text-charcoal">{fmtARS(perUnit)}</div>
+                          <div className="font-num text-lg font-bold text-charcoal">{fmtARS(perUnit)}</div>
                         </div>
                         <div>
                           <div className="font-body text-xs text-warm-gray uppercase tracking-wide mb-1">Precio sugerido / {saleMode === 'kg' ? 'kg' : 'unidad'}</div>
-                          <div className="font-sans text-lg font-bold text-burgundy">{fmtARS(suggested)}</div>
+                          <div className="font-num text-lg font-bold text-burgundy">{fmtARS(suggested)}</div>
                         </div>
                       </div>
                     )
@@ -647,11 +647,11 @@ export default function AdminCostsPage() {
                       <div className="flex items-center gap-6">
                         <div className="text-right hidden sm:block">
                           <div className="font-body text-xs text-warm-gray">Costo/unidad</div>
-                          <div className="font-body text-sm font-semibold text-charcoal">{fmtARS(costPerUnit)}</div>
+                          <div className="font-num text-sm font-semibold text-charcoal">{fmtARS(costPerUnit)}</div>
                         </div>
                         <div className="text-right">
                           <div className="font-body text-xs text-warm-gray flex items-center gap-1"><TrendingUp size={11} /> Precio sugerido</div>
-                          <div className="font-body text-base font-bold text-burgundy">{fmtARS(suggested)}</div>
+                          <div className="font-num text-base font-bold text-burgundy">{fmtARS(suggested)}</div>
                         </div>
                         <div className="flex gap-1">
                           <button
@@ -696,17 +696,17 @@ export default function AdminCostsPage() {
                           <tfoot>
                             <tr className="border-t-2 border-border">
                               <td colSpan={3} className="pt-2 font-body text-sm font-semibold text-charcoal">Total receta</td>
-                              <td className="pt-2 font-body text-sm font-bold text-charcoal text-right">{fmtARS(costTotal)}</td>
+                              <td className="pt-2 font-num text-sm font-bold text-charcoal text-right">{fmtARS(costTotal)}</td>
                             </tr>
                             <tr>
                               <td colSpan={3} className="py-1 font-body text-sm text-warm-gray">Costo por unidad producida</td>
-                              <td className="py-1 font-body text-sm font-semibold text-warm-gray text-right">{fmtARS(costPerUnit)}</td>
+                              <td className="py-1 font-num text-sm font-semibold text-warm-gray text-right">{fmtARS(costPerUnit)}</td>
                             </tr>
                             <tr>
                               <td colSpan={3} className="py-1 font-body text-sm font-semibold text-burgundy">
                                 Precio de venta sugerido (+{recipe.markup_pct}%)
                               </td>
-                              <td className="py-1 font-body text-base font-bold text-burgundy text-right">{fmtARS(suggested)}</td>
+                              <td className="py-1 font-num text-base font-bold text-burgundy text-right">{fmtARS(suggested)}</td>
                             </tr>
                           </tfoot>
                         </table>

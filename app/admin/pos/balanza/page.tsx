@@ -209,7 +209,7 @@ function Dato({ titulo, valor, ok }: { titulo: string; valor: string; ok: boolea
   return (
     <div className="flex flex-col gap-1">
       <span className="font-body text-xs text-warm-gray uppercase tracking-wide">{titulo}</span>
-      <span className={`font-sans text-lg font-bold ${ok ? 'text-green-700' : 'text-charcoal'}`}>{valor}</span>
+      <span className={`font-num text-lg font-bold ${ok ? 'text-green-700' : 'text-charcoal'}`}>{valor}</span>
     </div>
   )
 }

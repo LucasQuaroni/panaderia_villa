@@ -105,8 +105,8 @@ export default function CajaHistoryPage() {
                       <div className="font-body text-xs text-warm-gray">Abrió {fmtDate(r.opened_at)}</div>
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell font-body text-sm text-warm-gray">{r.ticketCount}</td>
-                    <td className="px-4 py-3 text-right font-body text-sm font-bold text-burgundy">{fmt(r.totalSales)}</td>
-                    <td className="px-4 py-3 text-right hidden md:table-cell font-body text-sm text-warm-gray">{fmt(expectedCash)}</td>
+                    <td className="px-4 py-3 text-right font-num text-sm font-bold text-burgundy">{fmt(r.totalSales)}</td>
+                    <td className="px-4 py-3 text-right hidden md:table-cell font-num text-sm text-warm-gray">{fmt(expectedCash)}</td>
                     <td className="px-4 py-3 text-right font-body text-sm font-semibold">
                       {diff === null ? (
                         <span className="text-warm-gray">—</span>

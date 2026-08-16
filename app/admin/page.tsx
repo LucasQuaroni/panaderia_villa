@@ -38,7 +38,7 @@ export default async function AdminDashboard() {
         <div className="flex items-center justify-between">
           <div>
             <p className="font-body text-sm text-cream/70 flex items-center gap-2"><Receipt size={15} /> Ventas de hoy</p>
-            <p className="font-sans text-4xl font-bold mt-1">{fmt(todayTotal)}</p>
+            <p className="font-num text-4xl font-bold mt-1">{fmt(todayTotal)}</p>
             <p className="font-body text-sm text-cream/80 mt-1 flex items-center gap-1.5"><ShoppingCart size={14} /> {todayCount} ticket(s)</p>
           </div>
           <span className="flex items-center gap-1 font-body text-sm font-semibold opacity-80 group-hover:opacity-100 transition-opacity">
@@ -58,7 +58,7 @@ export default async function AdminDashboard() {
             <div className="flex items-start justify-between">
               <div>
                 <p className="font-body text-sm text-warm-gray">{label}</p>
-                <p className="font-sans text-4xl font-bold text-charcoal mt-1">{value}</p>
+                <p className="font-num text-4xl font-bold text-charcoal mt-1">{value}</p>
               </div>
               <div className={`${color} text-cream p-3 rounded-xl shadow-md`}>
                 <Icon size={22} />

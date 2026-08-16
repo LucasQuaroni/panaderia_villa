@@ -111,8 +111,8 @@ export default function StockPage() {
                 return (
                   <tr key={r.id} className="border-b border-border/50 hover:bg-cream/40 transition-colors">
                     <td className="px-4 py-3 font-body text-sm font-semibold text-charcoal">{r.name}</td>
-                    <td className={`px-4 py-3 text-right font-body text-sm font-bold ${r.stock < 0 ? 'text-red-600' : 'text-charcoal'}`}>{fmtQty(r.stock, r.unit)}</td>
-                    <td className="px-4 py-3 text-right hidden sm:table-cell font-body text-sm text-warm-gray">{r.min_stock != null ? fmtQty(r.min_stock as number, r.unit) : '—'}</td>
+                    <td className={`px-4 py-3 text-right font-num text-sm font-bold ${r.stock < 0 ? 'text-red-600' : 'text-charcoal'}`}>{fmtQty(r.stock, r.unit)}</td>
+                    <td className="px-4 py-3 text-right hidden sm:table-cell font-num text-sm text-warm-gray">{r.min_stock != null ? fmtQty(r.min_stock as number, r.unit) : '—'}</td>
                     <td className="px-4 py-3 text-center">
                       {low ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-body text-xs font-medium"><AlertTriangle size={11} /> Bajo</span>
@@ -227,13 +227,13 @@ function ProduccionModal({ supabase, products, recipes, onClose, onSaved }: { su
           {recipe && (
             <div className="bg-cream-dark rounded-xl p-3 text-sm font-body">
               <div className="flex justify-between font-semibold text-charcoal mb-1">
-                <span>Produce</span><span>{addQty.toLocaleString('es-AR', { maximumFractionDigits: 3 })} {product?.unit}</span>
+                <span>Produce</span><span className="font-num">{addQty.toLocaleString('es-AR', { maximumFractionDigits: 3 })} {product?.unit}</span>
               </div>
               <div className="text-warm-gray text-xs mb-1">Consume:</div>
               {recipe.items.map((it, i) => (
                 <div key={i} className="flex justify-between text-warm-gray text-xs">
                   <span>{it.raw_material?.name ?? 'insumo'}</span>
-                  <span>{(it.quantity * n).toLocaleString('es-AR', { maximumFractionDigits: 3 })} {it.raw_material?.unit}</span>
+                  <span className="font-num">{(it.quantity * n).toLocaleString('es-AR', { maximumFractionDigits: 3 })} {it.raw_material?.unit}</span>
                 </div>
               ))}
             </div>
