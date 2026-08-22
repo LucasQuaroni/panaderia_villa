@@ -3,11 +3,10 @@
 /**
  * Mostrador (POS).
  *
- * Pensado para vender rápido con teclado y mouse:
+ * Pensado para vender rápido con mouse o pantalla táctil:
  *   · La balanza se lee sola: al pesar, el peso entra en vivo y no hay que
- *     apretar ningún botón para "tomarlo". Sólo se confirma con Enter.
+ *     apretar ningún botón para "tomarlo".
  *   · La barra de balanza queda siempre a la vista con el peso del plato.
- *   · Atajos: escribir busca, Enter agrega, F2 cobra, F4 monto libre, Esc limpia.
  *   · Al cobrar en efectivo se calcula el vuelto.
  */
 
@@ -16,13 +15,15 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Scale, Wifi, WifiOff,
-  X, DoorOpen, DoorClosed, CheckCircle2, CircleDollarSign, RotateCcw, Star, Cable, EyeOff,
-  Keyboard, Banknote, ArrowLeft, Coins, AlertTriangle,
+  X, DoorOpen, DoorClosed, CheckCircle2, CircleDollarSign, RotateCcw, Star, Cable,
+  Banknote, ArrowLeft, Coins, AlertTriangle,
 } from 'lucide-react'
 import { addPending, removePending, pendingCount, type PendingSale } from '@/lib/pos/queue'
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
 import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
+import { roundUpTo100 } from '@/lib/money'
+import { readJsonSetting } from '@/lib/json-settings'
 
 interface Product {
   id: string
@@ -31,7 +32,7 @@ interface Product {
   unit: string
   category: string | null
   featured?: boolean
-  active?: boolean   // false = oculto en la web, pero igual se puede vender
+  active?: boolean
 }
 
 interface CartItem {
@@ -50,10 +51,11 @@ interface CashSession {
   opened_at: string
 }
 
-const PAYMENT_METHODS = ['Efectivo', 'Débito', 'Crédito', 'Transferencia', 'QR']
+const PAYMENT_METHODS = ['Efectivo', 'Transferencia']
+const CASH_SETTINGS_KEY = 'cash_settings_v1'
 
 const fmtARS = (n: number) =>
-  new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
+  new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
 const fmtKg = (n: number) => `${n.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg`
 /** Peso con 3 decimales fijos, como lo muestra el visor de la balanza. */
 const fmtKgFixed = (n: number) =>
@@ -70,6 +72,8 @@ export default function PosPage() {
   const [letter, setLetter] = useState<string | null>(null)
   const [cart, setCart] = useState<CartItem[]>([])
   const [session, setSession] = useState<CashSession | null>(null)
+  const [openingFloat, setOpeningFloat] = useState(3000)
+  const [closingReserve, setClosingReserve] = useState(3000)
 
   const [online, setOnline] = useState(true)
   const [pending, setPending] = useState(0)
@@ -78,10 +82,10 @@ export default function PosPage() {
 
   // Modales
   const [weighing, setWeighing] = useState<Product | null>(null)
+  const [unitSelecting, setUnitSelecting] = useState<Product | null>(null)
   const [payOpen, setPayOpen] = useState(false)
   const [freeOpen, setFreeOpen] = useState(false)
   const [openCajaModal, setOpenCajaModal] = useState(false)
-  const [floatInput, setFloatInput] = useState('')
   const [closeCajaModal, setCloseCajaModal] = useState(false)
   const [flash, setFlash] = useState('')
   const [lastSale, setLastSale] = useState<
@@ -90,7 +94,7 @@ export default function PosPage() {
 
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const anyModalOpen = Boolean(weighing) || payOpen || freeOpen || openCajaModal || closeCajaModal
+  const anyModalOpen = Boolean(weighing) || Boolean(unitSelecting) || payOpen || freeOpen || openCajaModal || closeCajaModal
 
   const refreshPending = useCallback(() => setPending(pendingCount()), [])
 
@@ -107,10 +111,10 @@ export default function PosPage() {
         const { data: { user } } = await supabase.auth.getUser()
         setUserId(user?.id ?? null)
 
-        const [{ data: prods, error: prodErr }, { data: sessions }] = await Promise.all([
-          // Sin filtro de "active": el mostrador vende también los ocultos (con precio).
-          supabase.from('products').select('id, name, price, unit, category, featured, active').order('name'),
+        const [{ data: prods, error: prodErr }, { data: sessions }, settings] = await Promise.all([
+          supabase.from('products').select('id, name, price, unit, category, featured, active').eq('active', true).order('name'),
           supabase.from('cash_sessions').select('id, opening_float, opened_at').eq('status', 'open').order('opened_at', { ascending: false }).limit(1),
+          readJsonSetting(supabase, CASH_SETTINGS_KEY, { cash_opening_float: 3000, cash_closing_reserve: 3000 }),
         ])
 
         if (prodErr) throw prodErr
@@ -123,6 +127,10 @@ export default function PosPage() {
         const openSession = (sessions && sessions[0]) ? (sessions[0] as CashSession) : null
         setSession(openSession)
         cacheSession(openSession)
+        if (settings) {
+          setOpeningFloat(Number(settings.cash_opening_float))
+          setClosingReserve(Number(settings.cash_closing_reserve))
+        }
       } catch {
         // Sin conexión: uso lo último cacheado para poder trabajar igual.
         setProducts(getCachedProducts<Product>())
@@ -191,17 +199,18 @@ export default function PosPage() {
     return map
   }, [cart])
 
-  const addUnitProduct = useCallback((p: Product) => {
+  const addUnitProduct = useCallback((p: Product, amount: number) => {
+    const unitPrice = Number(p.price ?? 0)
     setCart(prev => {
       const existing = prev.find(i => i.product_id === p.id && i.unit !== 'kg')
       if (existing) {
         return prev.map(i => i === existing
-          ? { ...i, quantity: i.quantity + 1, subtotal: (i.quantity + 1) * i.unit_price }
+          ? { ...i, quantity: i.quantity + amount, subtotal: roundUpTo100((i.quantity + amount) * i.unit_price) }
           : i)
       }
       return [...prev, {
         key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: p.unit,
-        unit_price: p.price!, quantity: 1, subtotal: p.price!,
+        unit_price: unitPrice, quantity: amount, subtotal: roundUpTo100(unitPrice * amount),
       }]
     })
   }, [])
@@ -209,17 +218,27 @@ export default function PosPage() {
   const handleProductClick = useCallback((p: Product) => {
     if (p.unit === 'kg') {
       setWeighing(p)
+    } else if (p.unit === 'unidad') {
+      setUnitSelecting(p)
     } else {
-      addUnitProduct(p)
+      addUnitProduct(p, 1)
       setSearch('')
       focusSearch()
     }
   }, [addUnitProduct, focusSearch])
 
+  const addUnitSelection = (p: Product, amount: number) => {
+    addUnitProduct(p, amount)
+    setUnitSelecting(null)
+    setSearch('')
+    focusSearch()
+  }
+
   const addWeighed = (p: Product, kg: number) => {
+    const unitPrice = Number(p.price ?? 0)
     setCart(prev => [...prev, {
       key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
-      unit_price: p.price!, quantity: kg, subtotal: kg * p.price!,
+      unit_price: unitPrice, quantity: kg, subtotal: roundUpTo100(kg * unitPrice),
     }])
     setWeighing(null)
     setSearch('')
@@ -229,7 +248,7 @@ export default function PosPage() {
   const addFreeAmount = (desc: string, amount: number) => {
     setCart(prev => [...prev, {
       key: crypto.randomUUID(), product_id: null, name: desc || 'Varios',
-      unit: 'unidad', unit_price: amount, quantity: 1, subtotal: amount,
+      unit: 'unidad', unit_price: amount, quantity: 1, subtotal: roundUpTo100(amount),
     }])
     setFreeOpen(false)
     focusSearch()
@@ -240,7 +259,7 @@ export default function PosPage() {
       if (i.key !== key) return [i]
       const q = i.quantity + delta
       if (q <= 0) return []
-      return [{ ...i, quantity: q, subtotal: q * i.unit_price }]
+      return [{ ...i, quantity: q, subtotal: roundUpTo100(q * i.unit_price) }]
     }))
   }
 
@@ -248,39 +267,6 @@ export default function PosPage() {
   const clearCart = () => setCart([])
 
   const total = useMemo(() => cart.reduce((s, i) => s + i.subtotal, 0), [cart])
-
-  // ── Atajos de teclado ─────────────────────────────────────
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (anyModalOpen) return
-      const el = e.target as HTMLElement | null
-      const typing = !!el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-
-      if (e.key === 'F2') {
-        e.preventDefault()
-        if (cart.length > 0 && session) setPayOpen(true)
-        return
-      }
-      if (e.key === 'F4') {
-        e.preventDefault()
-        if (session) setFreeOpen(true)
-        return
-      }
-      if (e.key === 'Escape') {
-        setSearch('')
-        setLetter(null)
-        focusSearch()
-        return
-      }
-      // Cualquier tecla imprimible manda el foco al buscador: se puede
-      // empezar a escribir el producto sin tocar el mouse.
-      if (!typing && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        searchRef.current?.focus()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [anyModalOpen, cart.length, session, focusSearch])
 
   // Foco inicial en el buscador apenas hay caja abierta.
   useEffect(() => {
@@ -291,10 +277,9 @@ export default function PosPage() {
   // ── Caja ──────────────────────────────────────────────────
   const openCaja = async () => {
     if (!userId) return
-    const opening = parseNum(floatInput) || 0
     const { data } = await supabase
       .from('cash_sessions')
-      .insert({ opened_by: userId, opening_float: opening, status: 'open' })
+      .insert({ opened_by: userId, opening_float: openingFloat, status: 'open' })
       .select('id, opening_float, opened_at')
       .single()
     if (data) {
@@ -302,7 +287,6 @@ export default function PosPage() {
       cacheSession(data as CashSession)
     }
     setOpenCajaModal(false)
-    setFloatInput('')
     focusSearch()
   }
 
@@ -438,13 +422,7 @@ export default function PosPage() {
                 <input
                   ref={searchRef}
                   type="text" value={search} onChange={e => setSearch(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && filtered.length > 0) {
-                      e.preventDefault()
-                      handleProductClick(filtered[0])
-                    }
-                  }}
-                  placeholder="Buscar producto y Enter para agregar..."
+                  placeholder="Buscar producto..."
                   className="w-full pl-10 pr-3 py-3 border border-border rounded-xl font-body text-base focus:outline-none focus:border-burgundy bg-white"
                 />
                 {search && (
@@ -455,7 +433,7 @@ export default function PosPage() {
                 )}
               </div>
               <button onClick={() => setFreeOpen(true)}
-                title="Cobrar un importe suelto (F4)"
+                title="Cobrar un importe suelto"
                 className="flex items-center gap-1.5 px-4 rounded-xl border border-border bg-white text-charcoal font-body text-sm font-semibold hover:border-burgundy hover:text-burgundy transition-colors whitespace-nowrap">
                 <Banknote size={16} /> Monto libre
               </button>
@@ -507,13 +485,8 @@ export default function PosPage() {
                       </span>
                     )}
                     <span className="font-body text-sm font-semibold text-charcoal leading-snug line-clamp-2 pr-8">{p.name}</span>
-                    {p.active === false && (
-                      <span className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warm-gray/10 text-warm-gray font-body text-[10px] font-medium">
-                        <EyeOff size={10} /> No público
-                      </span>
-                    )}
                     <span className="mt-2 flex items-center gap-1.5">
-                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(p.price!)}</span>
+                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(Number(p.price ?? 0))}</span>
                       <span className="font-body text-xs text-warm-gray">{p.unit === 'kg' ? '/ kg' : 'c/u'}</span>
                       {p.unit === 'kg' && <Scale size={13} className="text-warm-gray" />}
                     </span>
@@ -525,15 +498,6 @@ export default function PosPage() {
               )}
             </div>
 
-            {/* Ayuda de atajos */}
-            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 font-body text-[11px] text-warm-gray">
-              <span className="flex items-center gap-1.5"><Keyboard size={13} /> Atajos:</span>
-              <span><Tecla>Escribí</Tecla> busca</span>
-              <span><Tecla>Enter</Tecla> agrega el primero</span>
-              <span><Tecla>F2</Tecla> cobrar</span>
-              <span><Tecla>F4</Tecla> monto libre</span>
-              <span><Tecla>Esc</Tecla> limpiar</span>
-            </div>
           </div>
 
           {/* Carrito */}
@@ -587,7 +551,7 @@ export default function PosPage() {
                 disabled={cart.length === 0}
                 className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors"
               >
-                <CircleDollarSign size={20} /> Cobrar <span className="font-normal opacity-70 text-xs">(F2)</span>
+                <CircleDollarSign size={20} /> Cobrar
               </button>
             </div>
           </div>
@@ -602,6 +566,16 @@ export default function PosPage() {
           scale={scale}
           onCancel={() => { setWeighing(null); focusSearch() }}
           onConfirm={kg => addWeighed(weighing, kg)}
+        />
+      )}
+
+      {/* Modal: cantidad para productos vendidos por unidad */}
+      {unitSelecting && (
+        <UnitQuantityModal
+          key={unitSelecting.id}
+          product={unitSelecting}
+          onCancel={() => { setUnitSelecting(null); focusSearch() }}
+          onConfirm={(amount) => addUnitSelection(unitSelecting, amount)}
         />
       )}
 
@@ -632,15 +606,11 @@ export default function PosPage() {
             </div>
             <div className="p-5 flex flex-col gap-4">
               <div className="flex flex-col gap-1">
-                <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Fondo inicial en efectivo</label>
-                <input
-                  type="number" inputMode="decimal" min="0" step="any" autoFocus
-                  value={floatInput}
-                  onChange={e => setFloatInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') openCaja() }}
-                  placeholder="0"
-                  className="px-4 py-3 border border-border rounded-xl font-body text-lg focus:outline-none focus:border-burgundy"
-                />
+                <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Fondo inicial fijo</label>
+                <div className="px-4 py-4 rounded-xl bg-cream-dark font-num text-3xl font-bold text-burgundy text-center">
+                  {fmtARS(openingFloat)}
+                </div>
+                <p className="font-body text-xs text-warm-gray text-center">El monto lo configura Administración.</p>
               </div>
               <button onClick={openCaja}
                 className="w-full px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark transition-colors">
@@ -657,6 +627,7 @@ export default function PosPage() {
           supabase={supabase}
           session={session}
           userId={userId}
+          closingReserve={closingReserve}
           onClose={() => setCloseCajaModal(false)}
           onClosed={() => { setSession(null); cacheSession(null); setCloseCajaModal(false); showFlash('Caja cerrada.') }}
           syncFirst={trySync}
@@ -668,11 +639,46 @@ export default function PosPage() {
 
 // ── Piezas de interfaz ──────────────────────────────────────
 
-function Tecla({ children }: { children: React.ReactNode }) {
+function UnitQuantityModal({
+  product, onCancel, onConfirm,
+}: {
+  product: Product
+  onCancel: () => void
+  onConfirm: (amount: number) => void
+}) {
+  const options = [
+    { amount: 1, label: 'Unidad', detail: '1 unidad' },
+    { amount: 6, label: 'Media docena', detail: '6 unidades' },
+    { amount: 12, label: 'Docena', detail: '12 unidades' },
+  ]
+
   return (
-    <kbd className="px-1.5 py-0.5 rounded border border-border bg-white font-body text-[10px] font-semibold text-charcoal">
-      {children}
-    </kbd>
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <div>
+            <h2 className="font-sans text-lg font-bold text-charcoal">{product.name}</h2>
+            <p className="font-body text-xs text-warm-gray mt-0.5">Elegí cómo agregarlo al carrito</p>
+          </div>
+          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+        </div>
+        <div className="p-5 grid gap-3">
+          {options.map((option) => (
+            <button
+              key={option.amount}
+              onClick={() => onConfirm(option.amount)}
+              className="flex items-center justify-between gap-4 px-5 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-left hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors group"
+            >
+              <span>
+                <span className="block font-body text-base font-bold">{option.label}</span>
+                <span className="block font-body text-xs text-warm-gray group-hover:text-cream/70">{option.detail}</span>
+              </span>
+              <span className="font-num text-xl font-bold">{fmtARS(Number(product.price ?? 0) * option.amount)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -720,12 +726,12 @@ function ScaleBar({ scale }: { scale: ScaleState }) {
         : { txt: 'Estabilizando…', cls: 'bg-amber-100 text-amber-700' }
 
   return (
-    <div className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-white border shadow-sm transition-colors ${
+    <div className={`flex flex-wrap items-center justify-between gap-4 px-5 py-4 rounded-xl bg-white border shadow-sm transition-colors ${
       scale.stable && scale.hasLoad ? 'border-green-300' : 'border-border'
     }`}>
       <div className="flex items-center gap-3">
-        <Scale size={20} className={scale.live ? 'text-green-600' : 'text-red-500'} />
-        <span className={`font-num text-2xl font-bold ${scale.live ? 'text-charcoal' : 'text-warm-gray/50'}`}>
+        <Scale size={28} className={scale.live ? 'text-green-600' : 'text-red-500'} />
+        <span className={`font-num text-5xl sm:text-6xl leading-none font-bold ${scale.live ? 'text-charcoal' : 'text-warm-gray/50'}`}>
           {scale.weight != null && scale.live ? fmtKgFixed(scale.weight) : '—'}
         </span>
         <span className={`px-2.5 py-1 rounded-full font-body text-[11px] font-semibold ${estado.cls}`}>
@@ -778,7 +784,6 @@ function WeighModal({
   const [input, setInput] = useState('')
   const [manual, setManual] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const confirmRef = useRef<HTMLButtonElement>(null)
 
   const auto = scale.connected && scale.live && !manual
   const liveKg = scale.weight
@@ -802,25 +807,10 @@ function WeighModal({
     onConfirm(Math.round(v * 1000) / 1000)
   }, [input, manual, scale.connected, scale.stable, onConfirm])
 
-  // Enter confirma y Esc cancela, esté donde esté el foco.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') { e.preventDefault(); confirmar() }
-      if (e.key === 'Escape') { e.preventDefault(); onCancel() }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [confirmar, onCancel])
-
   // Sin balanza, el foco arranca en el campo para tipear el peso directo.
   useEffect(() => {
     if (!scale.connected) inputRef.current?.focus()
   }, [scale.connected])
-
-  // Con balanza, cuando el peso queda firme el foco pasa al botón: Enter cobra.
-  useEffect(() => {
-    if (auto && puedeConfirmar) confirmRef.current?.focus()
-  }, [auto, puedeConfirmar])
 
   const estado = !scale.connected
     ? { txt: 'Balanza desconectada — escribí el peso', cls: 'text-warm-gray', box: 'bg-cream-dark border-border' }
@@ -845,7 +835,7 @@ function WeighModal({
         <div className="p-5 flex flex-col gap-4">
           <div>
             <div className="font-body text-base font-semibold text-charcoal">{product.name}</div>
-            <div className="font-body text-xs text-warm-gray">{fmtARS(product.price!)} / kg</div>
+            <div className="font-body text-xs text-warm-gray">{fmtARS(Number(product.price ?? 0))} / kg</div>
           </div>
 
           {/* Visor: el peso que se va a cargar */}
@@ -887,18 +877,16 @@ function WeighModal({
           <div className="flex items-center justify-between bg-cream-dark rounded-xl px-4 py-3">
             <span className="font-body text-sm text-warm-gray">Subtotal</span>
             <span className="font-num text-2xl font-bold text-burgundy">
-              {fmtARS((valido ? kg : 0) * product.price!)}
+              {fmtARS((valido ? kg : 0) * Number(product.price ?? 0))}
             </span>
           </div>
 
           <button
-            ref={confirmRef}
             onClick={confirmar}
             disabled={!puedeConfirmar}
             className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
             <Plus size={18} />
             {!valido ? 'Esperando peso…' : !puedeConfirmar ? 'Estabilizando…' : 'Agregar al carrito'}
-            {puedeConfirmar && <span className="font-normal opacity-70 text-xs">(Enter)</span>}
           </button>
         </div>
       </div>
@@ -935,22 +923,6 @@ function PayModal({
     return [...set].filter(v => v > total).sort((a, b) => a - b).slice(0, 5)
   }, [total])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        if (cashStep) setCashStep(false)
-        else onCancel()
-      }
-      if (e.key === 'Enter' && cashStep && alcanza) {
-        e.preventDefault()
-        onCharge('Efectivo', Math.max(0, Math.round(change)))
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [cashStep, alcanza, change, onCancel, onCharge])
-
   useEffect(() => { if (cashStep) cashRef.current?.focus() }, [cashStep])
 
   return (
@@ -975,7 +947,7 @@ function PayModal({
               className="w-full flex items-center justify-center gap-2 px-4 py-5 mb-3 rounded-xl bg-burgundy text-cream font-body text-lg font-bold hover:bg-burgundy-dark transition-colors">
               <Banknote size={22} /> Efectivo
             </button>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               {PAYMENT_METHODS.filter(m => m !== 'Efectivo').map(m => (
                 <button key={m} onClick={() => onCharge(m, null)}
                   className="px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors">
@@ -1027,7 +999,6 @@ function PayModal({
               disabled={paidOk && !alcanza}
               className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
               <CircleDollarSign size={20} /> Cobrar en efectivo
-              <span className="font-normal opacity-70 text-xs">(Enter)</span>
             </button>
             <p className="font-body text-[11px] text-warm-gray text-center">
               Podés cobrar sin cargar con cuánto paga: el vuelto es sólo una ayuda.
@@ -1053,12 +1024,6 @@ function FreeAmountModal({
 
   const confirmar = () => { if (valido) onConfirm(desc.trim(), Math.round(value * 100) / 100) }
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onCancel() } }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
-
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
@@ -1073,7 +1038,6 @@ function FreeAmountModal({
               type="number" inputMode="decimal" min="0" step="any" autoFocus
               value={amount}
               onChange={e => setAmount(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') confirmar() }}
               placeholder="0"
               className="px-4 py-3 border border-border rounded-xl font-num text-2xl font-bold focus:outline-none focus:border-burgundy"
             />
@@ -1083,7 +1047,6 @@ function FreeAmountModal({
             <input
               type="text" value={desc}
               onChange={e => setDesc(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') confirmar() }}
               placeholder="Varios"
               className="px-4 py-3 border border-border rounded-xl font-body text-base focus:outline-none focus:border-burgundy"
             />
@@ -1103,11 +1066,12 @@ function FreeAmountModal({
 
 // ── Cierre de caja (componente aparte) ──────────────────────
 function CloseCajaModal({
-  supabase, session, userId, onClose, onClosed, syncFirst,
+  supabase, session, userId, closingReserve, onClose, onClosed, syncFirst,
 }: {
   supabase: ReturnType<typeof createClient>
   session: CashSession
   userId: string | null
+  closingReserve: number
   onClose: () => void
   onClosed: () => void
   syncFirst: () => Promise<void>
@@ -1118,6 +1082,7 @@ function CloseCajaModal({
   const [ticketAvg, setTicketAvg] = useState(0)
   const [topProduct, setTopProduct] = useState<string>('')
   const [counted, setCounted] = useState('')
+  const [shift, setShift] = useState<'mediodia' | 'noche'>(() => new Date().getHours() < 17 ? 'mediodia' : 'noche')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -1138,6 +1103,7 @@ function CloseCajaModal({
       // Producto más vendido (por cantidad).
       const qtyByProduct: Record<string, number> = {}
       for (const it of itemsData ?? []) {
+        if (it.description.startsWith('__MAYORISTA__:')) continue
         qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.quantity)
       }
       const top = Object.entries(qtyByProduct).sort((a, b) => b[1] - a[1])[0]
@@ -1153,6 +1119,8 @@ function CloseCajaModal({
   const expectedCash = session.opening_float + cashSales
   const countedNum = parseNum(counted) || 0
   const diff = counted !== '' ? countedNum - expectedCash : 0
+  const cashForWithdrawal = counted !== '' ? countedNum : expectedCash
+  const cashWithdrawn = Math.max(0, cashForWithdrawal - closingReserve)
   const fmt = (n: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 
   const doClose = async () => {
@@ -1161,7 +1129,8 @@ function CloseCajaModal({
       status: 'closed',
       closed_at: new Date().toISOString(),
       closed_by: userId,
-      counted_cash: counted !== '' ? countedNum : null,
+      counted_cash: counted !== '' ? countedNum : expectedCash,
+      notes: JSON.stringify({ closing_shift: shift, cash_left: closingReserve, cash_withdrawn: cashWithdrawn }),
     }).eq('id', session.id)
     onClosed()
   }
@@ -1177,6 +1146,16 @@ function CloseCajaModal({
           <div className="p-8 text-center text-warm-gray font-body">Calculando...</div>
         ) : (
           <div className="p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Turno que cierra</label>
+              <div className="grid grid-cols-2 gap-2">
+                {(['mediodia', 'noche'] as const).map((value) => (
+                  <button key={value} onClick={() => setShift(value)} className={`px-3 py-2.5 rounded-lg border font-body text-sm font-semibold transition-colors ${shift === value ? 'bg-burgundy text-cream border-burgundy' : 'bg-white text-warm-gray border-border'}`}>
+                    {value === 'mediodia' ? 'Mediodía' : 'Noche'}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-cream-dark rounded-xl p-3">
                 <div className="font-body text-xs text-warm-gray">Ventas</div>
@@ -1235,6 +1214,15 @@ function CloseCajaModal({
                   {diff === 0 ? 'Cuadra exacto ✓' : diff > 0 ? `Sobra ${fmt(diff)}` : `Falta ${fmt(-diff)}`}
                 </span>
               )}
+            </div>
+
+            <div className="rounded-xl border border-green-200 bg-green-50 p-4">
+              <div className="flex justify-between font-body text-sm text-green-800">
+                <span>Dejar en caja</span><span className="font-num font-bold">{fmt(closingReserve)}</span>
+              </div>
+              <div className="flex justify-between font-body text-sm text-green-800 mt-2 border-t border-green-200 pt-2">
+                <span>Retirar</span><span className="font-num text-lg font-bold">{fmt(cashWithdrawn)}</span>
+              </div>
             </div>
 
             <button onClick={doClose} disabled={saving}

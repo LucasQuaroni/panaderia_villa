@@ -1,7 +1,7 @@
 # Panadería Villa — Plan de Iteraciones
 
 > Plan de trabajo para desarrollo. Complementa a `Panaderia_Villa_Plan_Evolutivo.docx`.
-> Actualizado: Julio 2026 · Revisión 1
+> Actualizado: Agosto 2026 · Revisión 2
 
 ## Cómo leer este plan
 
@@ -156,17 +156,19 @@ Estos 3 pasos de negocio son casi gratis y ya empiezan a mover el ranking esta s
 
 ---
 
-## Iteración 6 — Control de stock · P1 · Esfuerzo L
+## Iteración 6 — Stock disponible para venta · P1 · Esfuerzo L
 
-**Objetivo:** stock real de insumos, producción y ventas.
+**Objetivo:** stock real de productos disponibles para venta. Las materias primas
+se usan para calcular costos y recetas, sin controlar sus existencias.
 
-- [x] Compras de materias primas (entradas de stock). **P1 · S** → `app/admin/stock/page.tsx`
-- [x] Tandas de producción (`production_batches`): consumen insumos, suman producto. **P1 · M** → `scripts/005_stock.sql` + `register_production()`
-- [x] Avisos de stock bajo (umbral `min_stock`). **P1 · S**
-- [x] Mermas y ajustes de inventario. **P2 · S**
-- [x] Stock actual (vistas) + historial de caja como reporte base. **P1 · M** *(reportes avanzados: follow-up).*
+- [x] Stock base diario configurable para productos seleccionados, guardado en la configuración existente. **P1 · M**
+- [x] Producción separada entre total elaborado y cantidad disponible para venta, más el flujo “poner disponible” sin producir. **P1 · M**
+- [x] Mermas y ajustes de productos terminados. **P2 · S**
+- [x] Stock actual de productos + historial de caja como reporte base. **P1 · M** *(reportes avanzados: follow-up).*
 
-**Criterio de aceptación:** al cargar una tanda baja el stock de insumos y sube el de producto; las ventas descuentan producto; se ve cuánto se vendió y cuánto queda.
+**Criterio de aceptación:** al registrar una producción solo se suma la cantidad
+que se pone a la venta; las ventas descuentan producto y el stock diario vuelve
+a su base configurada.
 
 ---
 

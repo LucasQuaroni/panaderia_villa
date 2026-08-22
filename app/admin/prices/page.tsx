@@ -23,8 +23,8 @@ export default function AdminPricesPage() {
     const fetchProducts = async () => {
       const { data } = await supabase
         .from('products')
-        // Incluye también los "no públicos" (se venden en el mostrador aunque no estén en la web).
         .select('id, name, price, unit, category, active, sort_order')
+        .eq('active', true)
         .order('sort_order')
       setProducts(data ?? [])
       setLoading(false)
@@ -33,7 +33,7 @@ export default function AdminPricesPage() {
   }, [supabase])
 
   const fmtARS = (n: number) =>
-    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
+    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
 
   const unitLabel = (u: string) => (u === 'kg' ? '/ kg' : u === 'unidad' ? 'c/u' : `/ ${u}`)
 
@@ -56,7 +56,7 @@ export default function AdminPricesPage() {
         <div>
           <h1 className="font-sans text-3xl font-bold text-charcoal">Lista de Precios</h1>
           <p className="font-body text-warm-gray mt-1">
-            Vista para imprimir y mostrar en el mostrador. Incluye los productos no públicos.
+            Vista para imprimir y mostrar en el mostrador.
           </p>
         </div>
         <button
@@ -94,12 +94,11 @@ export default function AdminPricesPage() {
                         <tr key={p.id} className="border-b border-border/40">
                           <td className="py-1.5 pr-2 font-body text-sm text-charcoal">
                             {p.name}
-                            {p.active === false && <span className="text-warm-gray text-xs font-normal"> (no público)</span>}
                           </td>
                           <td className="py-1.5 text-right font-num text-sm font-bold text-burgundy whitespace-nowrap">
                             {p.price !== null ? (
                               <>
-                                {fmtARS(p.price)}{' '}
+                                {fmtARS(Number(p.price))}{' '}
                                 <span className="font-normal text-warm-gray text-xs">{unitLabel(p.unit)}</span>
                               </>
                             ) : (

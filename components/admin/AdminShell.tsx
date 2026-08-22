@@ -7,23 +7,39 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import {
   LayoutDashboard, Package, Users, MessageSquare, Calculator,
-  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt,
+  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt, Store,
 } from 'lucide-react'
 
 type Role = 'admin' | 'cashier' | null
 
-const navItems = [
-  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true, adminOnly: false },
-  { href: '/admin/pos', label: 'Mostrador (Ventas)', icon: ShoppingCart, adminOnly: false },
-  { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: false },
-  { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
-  { href: '/admin/products', label: 'Productos', icon: Package, adminOnly: true },
-  { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
-  { href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true },
-  { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },
-  { href: '/admin/content', label: 'Contenido', icon: FileText, adminOnly: true },
-  { href: '/admin/messages', label: 'Mensajes', icon: MessageSquare, adminOnly: true },
-  { href: '/admin/orders', label: 'Pedidos', icon: ShoppingBag, adminOnly: true },
+const dashboardItem = { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true, adminOnly: true }
+const navSections = [
+  {
+    label: 'WEB',
+    items: [
+      { href: '/admin/content', label: 'Contenido', icon: FileText, adminOnly: true },
+      { href: '/admin/messages', label: 'Mensajes', icon: MessageSquare, adminOnly: true },
+      { href: '/admin/orders', label: 'Pedidos', icon: ShoppingBag, adminOnly: true },
+    ],
+  },
+  {
+    label: 'PRODUCCIÓN',
+    items: [
+      { href: '/admin/products', label: 'Productos', icon: Package, adminOnly: true },
+      { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
+      { href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true },
+    ],
+  },
+  {
+    label: 'VENTAS',
+    items: [
+      { href: '/admin/pos', label: 'Mostrador minorista', icon: ShoppingCart, adminOnly: false },
+      { href: '/admin/wholesale', label: 'Mostrador mayorista', icon: Store, adminOnly: false },
+      { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: true },
+      { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
+      { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },
+    ],
+  },
 ]
 
 export default function AdminShell({ children, role }: { children: React.ReactNode; role?: Role }) {
@@ -32,8 +48,6 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const isAdmin = role === 'admin'
-  const visibleNavItems = navItems.filter((item) => isAdmin || !item.adminOnly)
-
   const isActive = (href: string, exact?: boolean) =>
     exact ? pathname === href : pathname.startsWith(href)
 
@@ -66,7 +80,8 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
 
       {/* Nav */}
       <nav className="flex-1 py-4 px-3 flex flex-col gap-1 overflow-y-auto">
-        {visibleNavItems.map(({ href, label, icon: Icon, exact }) => {
+        {isAdmin && (() => {
+          const { href, label, icon: Icon, exact } = dashboardItem
           const active = isActive(href, exact)
           return (
             <Link
@@ -83,6 +98,27 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
               {label}
               {active && <ChevronRight size={14} className="ml-auto text-sidebar-primary" />}
             </Link>
+          )
+        })()}
+        {navSections.map((section) => {
+          const visibleItems = section.items.filter((item) => isAdmin || !item.adminOnly)
+          if (visibleItems.length === 0) return null
+          return (
+            <div key={section.label} className="mt-3 first:mt-1">
+              <div className="px-3 pb-1.5 font-body text-[10px] font-bold tracking-[0.16em] text-sidebar-foreground/40">{section.label}</div>
+              <div className="flex flex-col gap-1">
+                {visibleItems.map(({ href, label, icon: Icon }) => {
+                  const active = isActive(href)
+                  return (
+                    <Link key={href} href={href} onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl font-body text-sm font-medium transition-all duration-200 group ${active ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}`}>
+                      <Icon size={18} className={active ? 'text-sidebar-primary' : 'group-hover:text-sidebar-primary transition-colors'} />
+                      {label}
+                      {active && <ChevronRight size={14} className="ml-auto text-sidebar-primary" />}
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
           )
         })}
       </nav>

@@ -52,14 +52,17 @@ export default function VentasPage() {
       .gte('sold_at', start.toISOString())
       .lt('sold_at', end.toISOString())
       .order('sold_at', { ascending: false })
-    setSales((data ?? []) as unknown as Sale[])
+    setSales(((data ?? []) as unknown as Sale[]).map((sale) => ({
+      ...sale,
+      items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
+    })))
     setLoading(false)
   }, [supabase, day])
 
   useEffect(() => { fetchSales() }, [fetchSales])
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
+    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
   const fmtTime = (s: string) => new Date(s).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
   const fmtQty = (q: number, unit: string) => unit === 'kg' ? `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : `${q}`
 

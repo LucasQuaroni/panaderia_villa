@@ -12,7 +12,6 @@ interface RawMaterial {
   name: string
   unit: string
   unit_price: number
-  stock: number | null
   supplier: string | null
 }
 
@@ -64,6 +63,8 @@ export default function AdminCostsPage() {
   const [recipeSearch, setRecipeSearch] = useState('')
   const [productName, setProductName] = useState('')          // nombre del producto (permite crear al vuelo)
   const [saleMode, setSaleMode] = useState<'kg' | 'unidad'>('unidad') // modalidad de venta de la receta
+  const [savingRecipe, setSavingRecipe] = useState(false)
+  const [recipeError, setRecipeError] = useState('')
 
   const fetchMaterials = useCallback(async () => {
     const { data } = await supabase.from('raw_materials').select('*').order('name')
@@ -74,10 +75,12 @@ export default function AdminCostsPage() {
   const fetchRecipes = useCallback(async () => {
     const [recRes, prodRes] = await Promise.all([
       supabase.from('recipes').select(`*, items:recipe_items(*, raw_material:raw_materials(*))`).order('created_at'),
-      supabase.from('products').select('id, name, unit, price').order('name'),
+      supabase.from('products').select('id, name, unit, price').eq('active', true).order('name'),
     ])
-    setRecipes((recRes.data ?? []) as Recipe[])
-    setProducts((prodRes.data ?? []) as Product[])
+    const availableProducts = (prodRes.data ?? []) as Product[]
+    const availableIds = new Set(availableProducts.map((product) => product.id))
+    setRecipes(((recRes.data ?? []) as Recipe[]).filter((recipe) => availableIds.has(recipe.product_id)))
+    setProducts(availableProducts)
     setRecLoading(false)
   }, [supabase])
 
@@ -86,7 +89,7 @@ export default function AdminCostsPage() {
 
   // ── Materials CRUD ────────────────────────────────────────────────────────────
   const openNewMat = () => {
-    setEditingMat({ name: '', unit: 'kg', unit_price: 0, stock: null, supplier: '' })
+    setEditingMat({ name: '', unit: 'kg', unit_price: undefined, supplier: '' })
     setIsNewMat(true)
   }
   const openEditMat = (m: RawMaterial) => { setEditingMat({ ...m }); setIsNewMat(false) }
@@ -99,7 +102,6 @@ export default function AdminCostsPage() {
         name: editingMat.name,
         unit: editingMat.unit,
         unit_price: editingMat.unit_price ?? 0,
-        stock: editingMat.stock,
         supplier: editingMat.supplier,
       })
     } else {
@@ -107,7 +109,6 @@ export default function AdminCostsPage() {
         name: editingMat.name,
         unit: editingMat.unit,
         unit_price: editingMat.unit_price ?? 0,
-        stock: editingMat.stock,
         supplier: editingMat.supplier,
       }).eq('id', editingMat.id!)
     }
@@ -139,11 +140,11 @@ export default function AdminCostsPage() {
 
   // ── Recipes CRUD ──────────────────────────────────────────────────────────────
   const openNewRecipe = () => {
-    // Ya no exige elegir un producto existente: se puede escribir uno nuevo.
+    setRecipeError('')
     setEditingRecipe({
       product_id: '',
       yield_qty: 1,
-      markup_pct: 250,
+      markup_pct: 300,
       notes: '',
     })
     setProductName('')
@@ -153,6 +154,7 @@ export default function AdminCostsPage() {
   }
 
   const openEditRecipe = (r: Recipe) => {
+    setRecipeError('')
     setEditingRecipe({ ...r })
     const prod = products.find(p => p.id === r.product_id)
     setProductName(prod?.name ?? '')
@@ -165,12 +167,14 @@ export default function AdminCostsPage() {
 
   const addRecipeItem = () => setRecipeItems(prev => [...prev, { raw_material_id: '', quantity: 1 }])
   const removeRecipeItem = (idx: number) => setRecipeItems(prev => prev.filter((_, i) => i !== idx))
-  const updateRecipeItem = (idx: number, field: string, value: string | number) => {
+  const updateRecipeItem = (idx: number, field: string, value: string | number | undefined) => {
     setRecipeItems(prev => prev.map((item, i) => i === idx ? { ...item, [field]: value } : item))
   }
 
   const saveRecipe = async () => {
     if (!editingRecipe) return
+    setRecipeError('')
+    setSavingRecipe(true)
 
     // Resolver el producto: usar el existente o crearlo al vuelo por nombre.
     let productId = editingRecipe.product_id
@@ -178,37 +182,45 @@ export default function AdminCostsPage() {
       const typed = productName.trim()
       const match = products.find(p => p.name.toLowerCase() === typed.toLowerCase())
       if (match) {
+        if (recipes.some((recipe) => recipe.product_id === match.id)) {
+          setRecipeError('Ese producto ya tiene una receta. Editá la receta existente.')
+          setSavingRecipe(false)
+          return
+        }
         productId = match.id
       } else {
-        if (!typed) return  // sin nombre no se puede crear
-        const { data: newProd } = await supabase.from('products').insert({
+        if (!typed) { setRecipeError('Toda receta debe tener un producto asociado.'); setSavingRecipe(false); return }
+        const { data: newProd, error: productError } = await supabase.from('products').insert({
           name: typed,
           unit: saleMode,
           active: true,
         }).select().single()
+        if (productError) { setRecipeError(productError.message); setSavingRecipe(false); return }
         productId = newProd?.id
       }
     }
-    if (!productId) return
+    if (!productId) { setRecipeError('Toda receta debe tener un producto asociado.'); setSavingRecipe(false); return }
 
     let recipeId = editingRecipe.id
 
     if (isNewRecipe) {
-      const { data } = await supabase.from('recipes').insert({
+      const { data, error: insertError } = await supabase.from('recipes').insert({
         product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
-        markup_pct: editingRecipe.markup_pct ?? 250,
+        markup_pct: editingRecipe.markup_pct ?? 300,
         notes: editingRecipe.notes,
       }).select().single()
+      if (insertError) { setRecipeError(insertError.message); setSavingRecipe(false); return }
       recipeId = data?.id
     } else {
-      await supabase.from('recipes').update({
+      const { error: updateError } = await supabase.from('recipes').update({
         product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
-        markup_pct: editingRecipe.markup_pct ?? 250,
+        markup_pct: editingRecipe.markup_pct ?? 300,
         notes: editingRecipe.notes,
         updated_at: new Date().toISOString(),
       }).eq('id', recipeId!)
+      if (updateError) { setRecipeError(updateError.message); setSavingRecipe(false); return }
       await supabase.from('recipe_items').delete().eq('recipe_id', recipeId!)
     }
 
@@ -232,13 +244,14 @@ export default function AdminCostsPage() {
     
     const yieldQty = editingRecipe.yield_qty ?? 1
     const perUnit = yieldQty > 0 ? finalCost / yieldQty : finalCost
-    const markup = editingRecipe.markup_pct ?? 250
+    const markup = editingRecipe.markup_pct ?? 300
     const suggestedPrice = perUnit * (1 + markup / 100)
 
     // Actualiza precio y modalidad (kg/unidad) del producto de forma coherente.
     await supabase.from('products').update({ price: suggestedPrice, unit: saleMode }).eq('id', productId)
 
     await fetchRecipes() // refresca también la lista de productos
+    setSavingRecipe(false)
     closeRecipe()
   }
 
@@ -256,7 +269,7 @@ export default function AdminCostsPage() {
       return sum + item.quantity * mat.unit_price
     }, 0)
     const perUnit = (editingRecipe?.yield_qty ?? 1) > 0 ? cost / (editingRecipe?.yield_qty ?? 1) : cost
-    const suggested = perUnit * (1 + (editingRecipe?.markup_pct ?? 250) / 100)
+    const suggested = perUnit * (1 + (editingRecipe?.markup_pct ?? 300) / 100)
     return { cost, perUnit, suggested }
   }
 
@@ -328,8 +341,7 @@ export default function AdminCostsPage() {
                   {[
                     { field: 'name', label: 'Nombre *', type: 'text', placeholder: 'Ej: Harina 000' },
                     { field: 'supplier', label: 'Proveedor', type: 'text', placeholder: 'Ej: Molinos Cañuelas' },
-                    { field: 'unit_price', label: 'Precio por unidad (ARS)', type: 'number', placeholder: '0' },
-                    { field: 'stock', label: 'Stock disponible', type: 'number', placeholder: '0' },
+                    { field: 'unit_price', label: 'Precio por unidad (ARS)', type: 'number', placeholder: 'Ingresá el precio' },
                   ].map(({ field, label, type, placeholder }) => (
                     <div key={field} className="flex flex-col gap-1">
                       <label className="font-body text-xs text-warm-gray uppercase tracking-wide">{label}</label>
@@ -382,7 +394,6 @@ export default function AdminCostsPage() {
                     <th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Ingrediente</th>
                     <th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide hidden sm:table-cell">Proveedor</th>
                     <th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Precio / Unidad</th>
-                    <th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide hidden md:table-cell">Stock</th>
                     <th className="text-right px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Acciones</th>
                   </tr>
                 </thead>
@@ -399,9 +410,6 @@ export default function AdminCostsPage() {
                       <td className="px-4 py-3">
                         <span className="font-num text-sm font-bold text-burgundy">{fmtARS(m.unit_price)}</span>
                         <span className="font-body text-xs text-warm-gray ml-1">/ {m.unit}</span>
-                      </td>
-                      <td className="px-4 py-3 hidden md:table-cell font-body text-sm text-warm-gray">
-                        {m.stock !== null ? `${m.stock} ${m.unit}` : '—'}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
@@ -465,7 +473,7 @@ export default function AdminCostsPage() {
                 <div className="p-6 flex flex-col gap-5">
                   {/* Producto (permite escribir uno nuevo) */}
                   <div className="flex flex-col gap-1">
-                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Producto</label>
+                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Producto asociado *</label>
                     <input
                       list="rec-products"
                       value={productName}
@@ -476,7 +484,7 @@ export default function AdminCostsPage() {
                         setEditingRecipe(prev => ({ ...prev!, product_id: match ? match.id : '' }))
                       }}
                       disabled={!isNewRecipe}
-                      placeholder="Escribí el nombre (si no existe, se crea)"
+                      placeholder="Elegí un producto o escribí uno nuevo"
                       className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white disabled:opacity-60"
                     />
                     <datalist id="rec-products">
@@ -485,27 +493,20 @@ export default function AdminCostsPage() {
                     {isNewRecipe && productName.trim() && !products.some(p => p.name.toLowerCase() === productName.trim().toLowerCase()) && (
                       <span className="font-body text-xs text-burgundy">Se creará el producto “{productName.trim()}”.</span>
                     )}
+                    <span className="font-body text-xs text-warm-gray">Toda receta pertenece a un producto. Un producto sí puede existir sin receta.</span>
                   </div>
 
                   {/* Modalidad de venta */}
                   <div className="flex flex-col gap-1">
-                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Se vende por</label>
-                    <div className="flex gap-2">
-                      {(['kg', 'unidad'] as const).map(mode => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setSaleMode(mode)}
-                          className={`flex-1 px-4 py-2.5 rounded-lg font-body text-sm font-medium transition-colors border ${
-                            saleMode === mode
-                              ? 'bg-burgundy text-cream border-burgundy'
-                              : 'bg-white text-warm-gray border-border hover:text-charcoal'
-                          }`}
-                        >
-                          {mode === 'kg' ? 'Kilo' : 'Unidad'}
-                        </button>
-                      ))}
-                    </div>
+                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Unidad de la receta y de venta</label>
+                    <select
+                      value={saleMode}
+                      onChange={e => setSaleMode(e.target.value as 'kg' | 'unidad')}
+                      className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white"
+                    >
+                      <option value="kg">Kilos (kg)</option>
+                      <option value="unidad">Unidades</option>
+                    </select>
                   </div>
 
                   {/* Rinde + margen */}
@@ -515,15 +516,17 @@ export default function AdminCostsPage() {
                         {saleMode === 'kg' ? 'Rinde (kg)' : 'Rinde (unidades)'}
                       </label>
                       <input type="number" min="0.001" step="any"
-                        value={editingRecipe.yield_qty ?? 1}
-                        onChange={e => setEditingRecipe(prev => ({ ...prev!, yield_qty: Number(e.target.value) }))}
+                        value={editingRecipe.yield_qty ?? ''}
+                        placeholder="Cantidad"
+                        onChange={e => setEditingRecipe(prev => ({ ...prev!, yield_qty: e.target.value === '' ? undefined : Number(e.target.value) }))}
                         className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy" />
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Margen (%)</label>
                       <input type="number" min="0" step="1"
-                        value={editingRecipe.markup_pct ?? 250}
-                        onChange={e => setEditingRecipe(prev => ({ ...prev!, markup_pct: Number(e.target.value) }))}
+                        value={editingRecipe.markup_pct ?? ''}
+                        placeholder="300"
+                        onChange={e => setEditingRecipe(prev => ({ ...prev!, markup_pct: e.target.value === '' ? undefined : Number(e.target.value) }))}
                         className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy" />
                     </div>
                   </div>
@@ -553,7 +556,7 @@ export default function AdminCostsPage() {
                           <input
                             type="number" min="0" step="any"
                             value={item.quantity ?? ''}
-                            onChange={e => updateRecipeItem(idx, 'quantity', Number(e.target.value))}
+                            onChange={e => updateRecipeItem(idx, 'quantity', e.target.value === '' ? undefined : Number(e.target.value))}
                             placeholder="Cant."
                             className="w-24 px-3 py-2 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
                           />
@@ -598,10 +601,11 @@ export default function AdminCostsPage() {
                     />
                   </div>
 
+                  {recipeError && <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-body text-sm">{recipeError}</div>}
                   <div className="flex gap-3 pt-2">
-                    <button onClick={saveRecipe}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors">
-                      <Save size={15} /> Guardar Receta
+                    <button onClick={saveRecipe} disabled={savingRecipe}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold hover:bg-burgundy-dark transition-colors disabled:opacity-50">
+                      <Save size={15} /> {savingRecipe ? 'Guardando...' : 'Guardar Receta'}
                     </button>
                     <button onClick={closeRecipe}
                       className="px-4 py-3 border border-border text-warm-gray rounded-xl font-body text-sm hover:text-charcoal transition-colors">
