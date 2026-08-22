@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Plus, Pencil, Trash2, Star, Eye, EyeOff, Save, X, Search } from 'lucide-react'
+import { AlertTriangle, Plus, Pencil, Trash2, Star, RotateCcw, Save, X, Search } from 'lucide-react'
 
 interface Product {
   id: string
@@ -17,10 +17,13 @@ interface Product {
   sort_order: number
 }
 
+type ProductForm = Omit<Product, 'id'>
+
 const UNITS = ['unidad', 'kg', 'docena', 'porción', '1/2 kg', '100g']
 const CATEGORIES = ['Panes', 'Facturas', 'Tortas', 'Especiales', 'Bebidas', 'Otros']
+const CATALOG_NORMALIZED_KEY = 'catalog_normalized_v1'
 
-const emptyProduct: Omit<Product, 'id'> = {
+const emptyProduct: ProductForm = {
   name: '',
   description: '',
   price: null,
@@ -37,11 +40,18 @@ export default function AdminProductsPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
-  const [form, setForm] = useState<Omit<Product, 'id'>>(emptyProduct)
+  const [form, setForm] = useState<ProductForm>(emptyProduct)
   const [saving, setSaving] = useState(false)
   const [uploadingImage, setUploadingImage] = useState(false)
   const [imageError, setImageError] = useState('')
   const [search, setSearch] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null)
+  const [deleteSalesCount, setDeleteSalesCount] = useState(0)
+  const [checkingDelete, setCheckingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  const [showDeleted, setShowDeleted] = useState(false)
+  const [actionMessage, setActionMessage] = useState('')
 
   // Sube la imagen a Supabase Storage y guarda solo el enlace (ya no base64).
   const handleImageUpload = async (file: File) => {
@@ -98,7 +108,43 @@ export default function AdminProductsPage() {
     await saveCategories(categories.filter(c => c !== cat))
   }
 
-  useEffect(() => { fetchProducts() }, [])
+  useEffect(() => {
+    const initializeCatalog = async () => {
+      // Corre una sola vez usando tablas/campos existentes: los productos
+      // históricos sin categoría quedan vigentes.
+      const { data: marker } = await supabase
+        .from('site_content')
+        .select('value')
+        .eq('key', CATALOG_NORMALIZED_KEY)
+        .maybeSingle()
+
+      if (!marker) {
+        const { data: existingProducts, error: readError } = await supabase
+          .from('products')
+          .select('id, category')
+
+        if (!readError) {
+          const updates = (existingProducts ?? []).map((product) => {
+            const changes: { active?: boolean } = {}
+            if (!product.category?.trim()) changes.active = true
+            return Object.keys(changes).length > 0
+              ? supabase.from('products').update(changes).eq('id', product.id)
+              : Promise.resolve({ error: null })
+          })
+          const results = await Promise.all(updates)
+          if (results.every((result) => !result.error)) {
+            await supabase.from('site_content').upsert({ key: CATALOG_NORMALIZED_KEY, value: new Date().toISOString() })
+          }
+        }
+      }
+
+      await fetchProducts()
+    }
+
+    void initializeCatalog()
+    // Se inicializa una sola vez al entrar a la pantalla.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const openNew = () => {
     setForm(emptyProduct)
@@ -124,24 +170,69 @@ export default function AdminProductsPage() {
 
   const handleSave = async () => {
     setSaving(true)
+    const payload = { ...form }
     if (editingId === 'new') {
-      await supabase.from('products').insert(form)
+      await supabase.from('products').insert(payload)
     } else {
-      await supabase.from('products').update(form).eq('id', editingId)
+      await supabase.from('products').update(payload).eq('id', editingId)
     }
     await fetchProducts()
     setSaving(false)
     closeForm()
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('¿Eliminar este producto?')) return
-    await supabase.from('products').delete().eq('id', id)
-    await fetchProducts()
+  const openDeleteDialog = async (product: Product) => {
+    setDeleteTarget(product)
+    setDeleteSalesCount(0)
+    setDeleteError('')
+    setCheckingDelete(true)
+
+    const retailResult = await supabase.from('sale_items').select('sale_id').eq('product_id', product.id)
+
+    if (retailResult.error) {
+      setDeleteError(`No se pudieron consultar las ventas: ${retailResult.error.message}`)
+    } else {
+      const saleIds = new Set<string>()
+      for (const row of retailResult.data ?? []) saleIds.add(String(row.sale_id))
+      setDeleteSalesCount(saleIds.size)
+    }
+    setCheckingDelete(false)
   }
 
-  const toggleActive = async (p: Product) => {
-    await supabase.from('products').update({ active: !p.active }).eq('id', p.id)
+  const closeDeleteDialog = () => {
+    if (deleting) return
+    setDeleteTarget(null)
+    setDeleteError('')
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget || checkingDelete) return
+    setDeleting(true)
+    setDeleteError('')
+    // Baja lógica sobre el campo que ya existe. Nunca se borra el registro,
+    // por lo que las ventas asociadas conservan intacta su referencia.
+    const { error } = await supabase
+      .from('products')
+      .update({ active: false, featured: false })
+      .eq('id', deleteTarget.id)
+    if (error) {
+      setDeleteError(`No se pudo dar de baja el producto: ${error.message}`)
+      setDeleting(false)
+      return
+    }
+    await fetchProducts()
+    setDeleting(false)
+    setDeleteTarget(null)
+    setActionMessage('Producto dado de baja. Las ventas y demás registros históricos se conservaron.')
+  }
+
+  const restoreProduct = async (product: Product) => {
+    const { error } = await supabase.from('products').update({ active: true }).eq('id', product.id)
+    if (error) {
+      setActionMessage(`No se pudo restaurar: ${error.message}`)
+      return
+    }
+    setActionMessage(`“${product.name}” fue restaurado.`)
     await fetchProducts()
   }
 
@@ -149,6 +240,13 @@ export default function AdminProductsPage() {
     await supabase.from('products').update({ featured: !p.featured }).eq('id', p.id)
     await fetchProducts()
   }
+
+  const displayedProducts = products.filter((product) => {
+    const matchesState = showDeleted ? !product.active : product.active
+    const matchesSearch = `${product.name} ${product.category ?? ''} ${product.description ?? ''}`.toLowerCase().includes(search.toLowerCase())
+    return matchesState && matchesSearch
+  })
+  const deletedCount = products.filter((product) => !product.active).length
 
   return (
     <div className="max-w-5xl mx-auto">
@@ -158,6 +256,12 @@ export default function AdminProductsPage() {
           <p className="font-body text-warm-gray mt-1">Gestioná los productos del catálogo.</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowDeleted((value) => !value)}
+            className={`flex items-center gap-2 px-4 py-2.5 border rounded-xl font-body text-sm font-semibold transition-colors shadow-sm ${showDeleted ? 'bg-charcoal text-cream border-charcoal' : 'bg-white text-charcoal border-border hover:bg-cream'}`}
+          >
+            <RotateCcw size={15} /> {showDeleted ? 'Ver vigentes' : `Dados de baja (${deletedCount})`}
+          </button>
           <button
             onClick={() => setManageCats(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-white text-charcoal border border-border rounded-xl font-body text-sm font-semibold hover:bg-cream transition-colors shadow-sm"
@@ -172,6 +276,12 @@ export default function AdminProductsPage() {
           </button>
         </div>
       </div>
+
+      {actionMessage && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">
+          {actionMessage}
+        </div>
+      )}
 
       {/* Modal Categorías */}
       {manageCats && (
@@ -210,6 +320,58 @@ export default function AdminProductsPage() {
         </div>
       )}
 
+      {/* Confirmación de eliminación con revisión de ventas */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={closeDeleteDialog}>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-border">
+              <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2">
+                <AlertTriangle size={20} className="text-amber-500" /> Dar de baja producto
+              </h2>
+              <button onClick={closeDeleteDialog} disabled={deleting} className="text-warm-gray hover:text-charcoal disabled:opacity-40"><X size={20} /></button>
+            </div>
+            <div className="p-5 flex flex-col gap-4">
+              {checkingDelete ? (
+                <div className="py-6 text-center font-body text-sm text-warm-gray">Revisando ventas asociadas...</div>
+              ) : (
+                <>
+                  <div>
+                    <p className="font-body text-sm text-charcoal">
+                      Vas a dar de baja <span className="font-semibold">“{deleteTarget.name}”</span>.
+                    </p>
+                    {deleteSalesCount > 0 ? (
+                      <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-amber-800">
+                        <p className="font-body text-sm font-bold">¿Estás seguro? Darás de baja un producto con ventas.</p>
+                        <p className="font-body text-xs mt-1">
+                          Está presente en {deleteSalesCount} venta(s). No se borrará ninguna venta: conservarán nombre, cantidad y precio.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="font-body text-xs text-warm-gray mt-2">Este producto no tiene ventas registradas. Sus demás datos también quedarán guardados.</p>
+                    )}
+                  </div>
+
+                  {deleteError && (
+                    <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 font-body text-sm text-red-700">
+                      {deleteError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3">
+                    <button onClick={closeDeleteDialog} disabled={deleting} className="flex-1 px-4 py-3 border border-border rounded-xl font-body text-sm font-semibold text-warm-gray hover:text-charcoal disabled:opacity-40">
+                      Cancelar
+                    </button>
+                    <button onClick={handleDelete} disabled={deleting || Boolean(deleteError)} className="flex-1 px-4 py-3 bg-red-600 text-white rounded-xl font-body text-sm font-bold hover:bg-red-700 disabled:opacity-40">
+                      {deleting ? 'Dando de baja...' : 'Confirmar baja'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Form modal */}
       {editingId !== null && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
@@ -239,6 +401,7 @@ export default function AdminProductsPage() {
                   <input name="price" type="number" value={form.price ?? ''} onChange={handleChange}
                     className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
                     placeholder="0.00" min="0" step="0.01" />
+                  <span className="font-body text-[11px] text-warm-gray">Se guarda el precio exacto. El redondeo se aplica al renglón dentro del carrito.</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Unidad</label>
@@ -280,14 +443,6 @@ export default function AdminProductsPage() {
                   <input type="checkbox" name="featured" checked={form.featured} onChange={handleChange}
                     className="w-4 h-4 accent-burgundy" />
                   <span className="font-body text-sm text-charcoal">Destacado</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer sm:col-span-2">
-                  <div className="relative">
-                    <input type="checkbox" name="active" checked={form.active} onChange={handleChange} className="sr-only" />
-                    <div className={`block w-10 h-6 rounded-full transition-colors ${form.active ? 'bg-burgundy' : 'bg-warm-gray/30'}`}></div>
-                    <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${form.active ? 'translate-x-4' : 'translate-x-0'}`}></div>
-                  </div>
-                  <span className="font-body text-sm text-charcoal">Mostrar al público</span>
                 </label>
               </div>
 
@@ -335,9 +490,7 @@ export default function AdminProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {products
-                .filter(p => `${p.name} ${p.category ?? ''} ${p.description ?? ''}`.toLowerCase().includes(search.toLowerCase()))
-                .map((p) => (
+              {displayedProducts.map((p) => (
                 <tr key={p.id} className="border-b border-border/50 hover:bg-cream/50 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -347,47 +500,55 @@ export default function AdminProductsPage() {
                     <span className="font-body text-xs text-warm-gray line-clamp-1">{p.description}</span>
                   </td>
                   <td className="px-4 py-3 hidden sm:table-cell">
-                    <span className="px-2 py-0.5 bg-burgundy/10 text-burgundy rounded-full font-body text-xs">{p.category}</span>
+                    <span className="px-2 py-0.5 bg-burgundy/10 text-burgundy rounded-full font-body text-xs">{p.category || 'Sin categoría'}</span>
                   </td>
                   <td className="px-4 py-3 hidden md:table-cell">
-                    <span className="font-body text-sm text-charcoal">
-                      {p.price !== null ? `$${p.price.toLocaleString('es-AR')} / ${p.unit}` : '—'}
+                    <span className="font-num text-sm text-charcoal">
+                      {p.price !== null ? `$${Number(p.price).toLocaleString('es-AR', { maximumFractionDigits: 2 })} / ${p.unit}` : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <button onClick={() => toggleActive(p)}
-                      className={`relative w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-300 ease-in-out mx-auto ${p.active ? 'bg-burgundy' : 'bg-warm-gray/30'}`}
-                      title={p.active ? 'Visible' : 'Oculto'}>
-                      <div className={`bg-white w-4 h-4 rounded-full shadow-sm transform transition-transform duration-300 ease-in-out ${p.active ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
+                    {!p.active ? (
+                      <span className="inline-flex px-2 py-1 rounded-full bg-red-50 text-red-700 font-body text-xs font-semibold">Baja</span>
+                    ) : (
+                      <span className="inline-flex px-2 py-1 rounded-full bg-green-50 text-green-700 font-body text-xs font-semibold">Vigente</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => toggleFeatured(p)}
-                        className={`p-1.5 rounded-lg transition-colors ${p.featured ? 'text-gold bg-gold/10' : 'text-warm-gray hover:text-gold hover:bg-gold/10'}`}
-                        title="Destacar">
-                        <Star size={15} />
-                      </button>
-                      <button onClick={() => openEdit(p)}
-                        className="p-1.5 rounded-lg text-warm-gray hover:text-burgundy hover:bg-burgundy/10 transition-colors">
-                        <Pencil size={15} />
-                      </button>
-                      <button onClick={() => handleDelete(p.id)}
-                        className="p-1.5 rounded-lg text-warm-gray hover:text-red-500 hover:bg-red-50 transition-colors">
-                        <Trash2 size={15} />
-                      </button>
+                      {!p.active ? (
+                        <button onClick={() => restoreProduct(p)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-green-700 bg-green-50 hover:bg-green-100 font-body text-xs font-semibold">
+                          <RotateCcw size={14} /> Restaurar
+                        </button>
+                      ) : (
+                        <>
+                          <button onClick={() => toggleFeatured(p)}
+                            className={`p-1.5 rounded-lg transition-colors ${p.featured ? 'text-gold bg-gold/10' : 'text-warm-gray hover:text-gold hover:bg-gold/10'}`}
+                            title="Destacar">
+                            <Star size={15} />
+                          </button>
+                          <button onClick={() => openEdit(p)}
+                            className="p-1.5 rounded-lg text-warm-gray hover:text-burgundy hover:bg-burgundy/10 transition-colors">
+                            <Pencil size={15} />
+                          </button>
+                          <button onClick={() => openDeleteDialog(p)}
+                            className="p-1.5 rounded-lg text-warm-gray hover:text-red-500 hover:bg-red-50 transition-colors" title="Dar de baja">
+                            <Trash2 size={15} />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {products.length === 0 && (
+          {displayedProducts.length === 0 && !search && (
             <div className="text-center py-12 text-warm-gray font-body text-sm">
-              No hay productos. Creá el primero.
+              {showDeleted ? 'No hay productos dados de baja.' : 'No hay productos. Creá el primero.'}
             </div>
           )}
-          {products.length > 0 && products.filter(p => `${p.name} ${p.category ?? ''} ${p.description ?? ''}`.toLowerCase().includes(search.toLowerCase())).length === 0 && (
+          {displayedProducts.length === 0 && Boolean(search) && (
             <div className="text-center py-12 text-warm-gray font-body text-sm">
               Sin resultados para “{search}”.
             </div>

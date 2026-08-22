@@ -11,6 +11,10 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
 4. **`005_stock.sql`** — control de stock: tandas de producción, umbrales de
    stock bajo, ajustes/mermas y vistas de stock actual. Requiere la `002` y la `004`.
 
+La baja lógica, el fondo de caja, los clientes mayoristas, los márgenes, el
+stock base diario y el redondeo comercial usan las tablas existentes y se
+gestionan automáticamente desde la aplicación; no requieren scripts extra.
+
 ### Cómo correr cada archivo
 
 1. Entrá a tu proyecto en [app.supabase.com](https://app.supabase.com).
@@ -104,7 +108,8 @@ Después de correr `004`:
 1. Correr `002` → `003` → `004` → `005` en Supabase.
 2. Asignarte admin y crear el usuario cajero.
 3. Definir `NEXT_PUBLIC_SITE_URL` y desplegar (HTTPS).
-4. Cargar materias primas, recetas (con kg/unidad) y productos con precio.
-5. Registrar la producción del día (descuenta insumos, suma producto).
+4. Cargar materias primas para costos, recetas (con kg/unidad) y productos con precio.
+5. Configurar el stock base diario y registrar cuánto de cada producción queda
+   realmente disponible para vender. Las materias primas no llevan existencias.
 6. Abrir la app en Chrome, "Instalar", conectar la balanza y abrir caja.
 7. ¡A vender!

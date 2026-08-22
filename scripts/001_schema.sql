@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS public.recipes (
   id            UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
   product_id    UUID    NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
   yield_qty     NUMERIC(10,3) NOT NULL DEFAULT 1,   -- how many units / kg the recipe produces
-  markup_pct    NUMERIC(6,2)  NOT NULL DEFAULT 250, -- markup percentage over cost
+  markup_pct    NUMERIC(6,2)  NOT NULL DEFAULT 300, -- markup percentage over cost
   notes         TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()

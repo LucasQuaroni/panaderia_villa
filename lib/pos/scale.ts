@@ -236,8 +236,26 @@ export async function startScale(opts: StartOptions): Promise<ScaleController | 
   opts.onStatus(true)
 
   let active = true
+  let closed = false
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   let writer: WritableStreamDefaultWriter<Uint8Array> | null = null
+
+  /**
+   * Cierre único: se llama tanto al frenar a mano como cuando se corta el
+   * cable. Avisar siempre con onStatus(false) es lo que permite que la
+   * pantalla muestre "balanza desconectada" en vez de un peso viejo congelado.
+   */
+  const finish = async () => {
+    if (closed) return
+    closed = true
+    active = false
+    try { await reader?.cancel() } catch { /* noop */ }
+    try { writer?.releaseLock() } catch { /* noop */ }
+    // Le damos un instante al pollLoop para que salga antes de cerrar el puerto.
+    await new Promise(r => setTimeout(r, 50))
+    try { await port?.close() } catch { /* noop */ }
+    opts.onStatus(false)
+  }
 
   // Autodetección: si viene un protocolo forzado, arrancamos ya confirmados.
   let protoIndex = opts.protocol ? PROTOCOL_ORDER.indexOf(opts.protocol) : 0
@@ -252,12 +270,13 @@ export async function startScale(opts: StartOptions): Promise<ScaleController | 
 
   // ── Lectura: un único loop que acumula bytes y extrae tramas ──
   const readLoop = async () => {
-    while (active && port && port.readable) {
+    let ended = false
+    while (active && !ended && port && port.readable) {
       try {
         reader = port.readable.getReader()
         while (active) {
           const { value, done } = await reader.read()
-          if (done) break
+          if (done) { ended = true; break }
           if (!value || value.length === 0) continue
 
           buffer.push(...value)
@@ -337,19 +356,15 @@ export async function startScale(opts: StartOptions): Promise<ScaleController | 
     writer = null
   }
 
-  readLoop()
+  // Si cualquiera de los dos loops termina (cable desenchufado, puerto tomado
+  // por otro programa), damos la conexión por caída y avisamos.
+  // Si se corta la lectura (cable desenchufado, puerto tomado por otro
+  // programa) damos la conexión por caída y avisamos a la pantalla.
+  readLoop().finally(() => { if (active) finish() })
   pollLoop()
 
   return {
     protocol: () => (locked ? currentProto() : null),
-    stop: async () => {
-      active = false
-      try { await reader?.cancel() } catch { /* noop */ }
-      try { writer?.releaseLock() } catch { /* noop */ }
-      // Le damos un instante al pollLoop para que salga antes de cerrar el puerto.
-      await new Promise(r => setTimeout(r, 50))
-      try { await port?.close() } catch { /* noop */ }
-      opts.onStatus(false)
-    },
+    stop: finish,
   }
 }

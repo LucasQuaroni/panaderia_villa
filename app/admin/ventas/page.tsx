@@ -52,14 +52,17 @@ export default function VentasPage() {
       .gte('sold_at', start.toISOString())
       .lt('sold_at', end.toISOString())
       .order('sold_at', { ascending: false })
-    setSales((data ?? []) as unknown as Sale[])
+    setSales(((data ?? []) as unknown as Sale[]).map((sale) => ({
+      ...sale,
+      items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
+    })))
     setLoading(false)
   }, [supabase, day])
 
   useEffect(() => { fetchSales() }, [fetchSales])
 
   const fmt = (n: number) =>
-    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
+    new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
   const fmtTime = (s: string) => new Date(s).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
   const fmtQty = (q: number, unit: string) => unit === 'kg' ? `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : `${q}`
 
@@ -112,15 +115,15 @@ export default function VentasPage() {
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 text-warm-gray font-body text-sm"><CircleDollarSign size={16} /> Total vendido</div>
-          <div className="font-sans text-3xl font-bold text-burgundy mt-1">{fmt(total)}</div>
+          <div className="font-num text-3xl font-bold text-burgundy mt-1">{fmt(total)}</div>
         </div>
         <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 text-warm-gray font-body text-sm"><ShoppingCart size={16} /> Tickets</div>
-          <div className="font-sans text-3xl font-bold text-charcoal mt-1">{count}</div>
+          <div className="font-num text-3xl font-bold text-charcoal mt-1">{count}</div>
         </div>
         <div className="bg-white rounded-2xl border border-border shadow-sm p-5 col-span-2 sm:col-span-1">
           <div className="flex items-center gap-2 text-warm-gray font-body text-sm"><TrendingUp size={16} /> Ticket promedio</div>
-          <div className="font-sans text-3xl font-bold text-charcoal mt-1">{fmt(avg)}</div>
+          <div className="font-num text-3xl font-bold text-charcoal mt-1">{fmt(avg)}</div>
         </div>
       </div>
 
@@ -133,7 +136,7 @@ export default function VentasPage() {
           ) : Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([m, v]) => (
             <div key={m} className="flex justify-between py-1.5 border-b border-border/40 last:border-0">
               <span className="font-body text-sm text-charcoal">{m}</span>
-              <span className="font-body text-sm font-semibold text-charcoal">{fmt(v)}</span>
+              <span className="font-num text-sm font-semibold text-charcoal">{fmt(v)}</span>
             </div>
           ))}
         </div>
@@ -144,7 +147,7 @@ export default function VentasPage() {
           ) : topProducts.map(([name, q]) => (
             <div key={name} className="flex justify-between py-1.5 border-b border-border/40 last:border-0">
               <span className="font-body text-sm text-charcoal truncate pr-2">{name}</span>
-              <span className="font-body text-sm font-semibold text-warm-gray whitespace-nowrap">{q.toLocaleString('es-AR', { maximumFractionDigits: 3 })}</span>
+              <span className="font-num text-sm font-semibold text-warm-gray whitespace-nowrap">{q.toLocaleString('es-AR', { maximumFractionDigits: 3 })}</span>
             </div>
           ))}
         </div>
@@ -172,14 +175,14 @@ export default function VentasPage() {
                       <div className="font-body text-xs text-warm-gray">{s.items.length} ítem(s) · {s.payment_method ?? '—'}</div>
                     </div>
                   </div>
-                  <span className="font-sans text-base font-bold text-burgundy">{fmt(Number(s.total))}</span>
+                  <span className="font-num text-base font-bold text-burgundy">{fmt(Number(s.total))}</span>
                 </button>
                 {open && (
                   <div className="border-t border-border px-4 py-3 bg-cream/20">
                     {s.items.map(it => (
                       <div key={it.id} className="flex justify-between py-1 font-body text-sm">
                         <span className="text-charcoal">{it.description} <span className="text-warm-gray text-xs">({fmtQty(Number(it.quantity), it.unit)} × {fmt(Number(it.unit_price))})</span></span>
-                        <span className="font-semibold text-charcoal">{fmt(Number(it.subtotal))}</span>
+                        <span className="font-num font-semibold text-charcoal">{fmt(Number(it.subtotal))}</span>
                       </div>
                     ))}
                   </div>
