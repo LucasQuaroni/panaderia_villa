@@ -16,14 +16,20 @@ import { createClient } from '@/lib/supabase/client'
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Scale, Wifi, WifiOff,
   X, DoorOpen, DoorClosed, CheckCircle2, CircleDollarSign, RotateCcw, Star, Cable,
-  Banknote, ArrowLeft, Coins, AlertTriangle,
+  Banknote, ArrowLeft, Coins, AlertTriangle, Utensils,
 } from 'lucide-react'
-import { addPending, removePending, pendingCount, type PendingSale } from '@/lib/pos/queue'
+import { addPending, removePending, pendingCount, updatePendingPayment, type PendingSale } from '@/lib/pos/queue'
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
 import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
 import { roundUpTo100 } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
+
+interface SaleOption {
+  label: string
+  quantity: number
+  price?: number | null
+}
 
 interface Product {
   id: string
@@ -33,6 +39,7 @@ interface Product {
   category: string | null
   featured?: boolean
   active?: boolean
+  sale_options?: SaleOption[] | null
 }
 
 interface CartItem {
@@ -41,8 +48,9 @@ interface CartItem {
   name: string
   unit: string
   unit_price: number
-  quantity: number   // kg o unidades
+  quantity: number   // cantidad de presentaciones (o kg)
   subtotal: number
+  stockFactor: number
 }
 
 interface CashSession {
@@ -61,6 +69,19 @@ const fmtKg = (n: number) => `${n.toLocaleString('es-AR', { maximumFractionDigit
 const fmtKgFixed = (n: number) =>
   `${n.toLocaleString('es-AR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg`
 const parseNum = (s: string) => Number(s.replace(',', '.'))
+const DEFAULT_UNIT_OPTIONS: SaleOption[] = [
+  { label: 'Unidad', quantity: 1 },
+  { label: 'Media docena', quantity: 6 },
+  { label: 'Docena', quantity: 12 },
+]
+
+const saleOptionsFor = (product: Product): SaleOption[] => {
+  const configured = Array.isArray(product.sale_options)
+    ? product.sale_options.filter((option) => option?.label?.trim() && Number(option.quantity) > 0)
+    : []
+  if (configured.length > 0) return configured
+  return product.unit === 'unidad' ? DEFAULT_UNIT_OPTIONS : []
+}
 
 export default function PosPage() {
   const supabase = createClient()
@@ -84,17 +105,18 @@ export default function PosPage() {
   const [weighing, setWeighing] = useState<Product | null>(null)
   const [unitSelecting, setUnitSelecting] = useState<Product | null>(null)
   const [payOpen, setPayOpen] = useState(false)
+  const [changePaymentOpen, setChangePaymentOpen] = useState(false)
   const [freeOpen, setFreeOpen] = useState(false)
   const [openCajaModal, setOpenCajaModal] = useState(false)
   const [closeCajaModal, setCloseCajaModal] = useState(false)
   const [flash, setFlash] = useState('')
   const [lastSale, setLastSale] = useState<
-    { client_uuid: string; total: number; method: string; change: number | null } | null
+    { client_uuid: string; total: number; grossTotal: number; method: string; change: number | null } | null
   >(null)
 
   const searchRef = useRef<HTMLInputElement>(null)
 
-  const anyModalOpen = Boolean(weighing) || Boolean(unitSelecting) || payOpen || freeOpen || openCajaModal || closeCajaModal
+  const anyModalOpen = Boolean(weighing) || Boolean(unitSelecting) || payOpen || changePaymentOpen || freeOpen || openCajaModal || closeCajaModal
 
   const refreshPending = useCallback(() => setPending(pendingCount()), [])
 
@@ -112,7 +134,7 @@ export default function PosPage() {
         setUserId(user?.id ?? null)
 
         const [{ data: prods, error: prodErr }, { data: sessions }, settings] = await Promise.all([
-          supabase.from('products').select('id, name, price, unit, category, featured, active').eq('active', true).order('name'),
+          supabase.from('products').select('id, name, price, unit, category, featured, active, sale_options').eq('active', true).order('name'),
           supabase.from('cash_sessions').select('id, opening_float, opened_at').eq('status', 'open').order('opened_at', { ascending: false }).limit(1),
           readJsonSetting(supabase, CASH_SETTINGS_KEY, { cash_opening_float: 3000, cash_closing_reserve: 3000 }),
         ])
@@ -194,23 +216,27 @@ export default function PosPage() {
     for (const i of cart) {
       if (!i.product_id) continue
       const prev = map.get(i.product_id)
-      map.set(i.product_id, { qty: (prev?.qty ?? 0) + i.quantity, unit: i.unit })
+      map.set(i.product_id, { qty: (prev?.qty ?? 0) + i.quantity * i.stockFactor, unit: i.unit })
     }
     return map
   }, [cart])
 
-  const addUnitProduct = useCallback((p: Product, amount: number) => {
-    const unitPrice = Number(p.price ?? 0)
+  const addUnitProduct = useCallback((p: Product, option: SaleOption | null) => {
+    const unitPrice = roundUpTo100(Number(p.price ?? 0))
+    const amount = option?.quantity ?? 1
+    const presentation = option?.label ?? p.unit
+    const presentationPrice = roundUpTo100(Number(option?.price) > 0 ? Number(option?.price) : unitPrice * amount)
     setCart(prev => {
-      const existing = prev.find(i => i.product_id === p.id && i.unit !== 'kg')
+      const existing = prev.find(i => i.product_id === p.id && i.unit === presentation)
       if (existing) {
         return prev.map(i => i === existing
-          ? { ...i, quantity: i.quantity + amount, subtotal: roundUpTo100((i.quantity + amount) * i.unit_price) }
+          ? { ...i, quantity: i.quantity + 1, subtotal: roundUpTo100((i.quantity + 1) * i.unit_price) }
           : i)
       }
       return [...prev, {
-        key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: p.unit,
-        unit_price: unitPrice, quantity: amount, subtotal: roundUpTo100(unitPrice * amount),
+        key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: presentation,
+        unit_price: presentationPrice, quantity: 1, subtotal: presentationPrice,
+        stockFactor: amount,
       }]
     })
   }, [])
@@ -218,27 +244,28 @@ export default function PosPage() {
   const handleProductClick = useCallback((p: Product) => {
     if (p.unit === 'kg') {
       setWeighing(p)
-    } else if (p.unit === 'unidad') {
+    } else if (saleOptionsFor(p).length > 0) {
       setUnitSelecting(p)
     } else {
-      addUnitProduct(p, 1)
+      addUnitProduct(p, null)
       setSearch('')
       focusSearch()
     }
   }, [addUnitProduct, focusSearch])
 
-  const addUnitSelection = (p: Product, amount: number) => {
-    addUnitProduct(p, amount)
+  const addUnitSelection = (p: Product, option: SaleOption) => {
+    addUnitProduct(p, option)
     setUnitSelecting(null)
     setSearch('')
     focusSearch()
   }
 
   const addWeighed = (p: Product, kg: number) => {
-    const unitPrice = Number(p.price ?? 0)
+    const unitPrice = roundUpTo100(Number(p.price ?? 0))
     setCart(prev => [...prev, {
       key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
       unit_price: unitPrice, quantity: kg, subtotal: roundUpTo100(kg * unitPrice),
+      stockFactor: 1,
     }])
     setWeighing(null)
     setSearch('')
@@ -249,6 +276,7 @@ export default function PosPage() {
     setCart(prev => [...prev, {
       key: crypto.randomUUID(), product_id: null, name: desc || 'Varios',
       unit: 'unidad', unit_price: amount, quantity: 1, subtotal: roundUpTo100(amount),
+      stockFactor: 1,
     }])
     setFreeOpen(false)
     focusSearch()
@@ -302,19 +330,46 @@ export default function PosPage() {
         description: i.name,
         unit: i.unit,
         quantity: i.quantity,
+        stock_quantity: i.quantity * i.stockFactor,
         unit_price: i.unit_price,
         subtotal: i.subtotal,
       })),
       created_at: new Date().toISOString(),
     }
-    const saleTotal = sale.items.reduce((s, x) => s + x.subtotal, 0)
+    const grossTotal = sale.items.reduce((s, x) => s + x.subtotal, 0)
+    const saleTotal = method === 'Consumo interno' ? 0 : grossTotal
     addPending(sale)          // 1) guardado local inmediato (nunca se pierde)
     refreshPending()
     clearCart()
     setPayOpen(false)
-    setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, method, change })
+    setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, grossTotal, method, change })
     focusSearch()
     trySync()                 // 2) intento de sincronización
+  }
+
+  const changeLastSalePayment = async (method: string) => {
+    if (!lastSale) return
+    const pendingUpdated = updatePendingPayment(lastSale.client_uuid, method)
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      await trySync()
+      const { data, error } = await supabase.rpc('change_sale_payment_method', {
+        p_client_uuid: lastSale.client_uuid,
+        p_payment_method: method,
+      })
+      if (error || (!data && !pendingUpdated)) {
+        setChangePaymentOpen(false)
+        showFlash('No se pudo actualizar el medio de pago. Reintentá.')
+        return
+      }
+    }
+    setLastSale((previous) => previous ? {
+      ...previous,
+      method,
+      total: method === 'Consumo interno' ? 0 : previous.grossTotal,
+      change: null,
+    } : null)
+    setChangePaymentOpen(false)
+    showFlash('Medio de pago actualizado.')
   }
 
   const undoLastSale = async () => {
@@ -399,6 +454,9 @@ export default function PosPage() {
           )}
           <button onClick={undoLastSale} className="flex items-center gap-1 text-red-600 hover:underline font-semibold">
             <RotateCcw size={14} /> Deshacer
+          </button>
+          <button onClick={() => setChangePaymentOpen(true)} className="flex items-center gap-1 text-burgundy hover:underline font-semibold">
+            <Banknote size={14} /> Cambiar pago
           </button>
         </div>
       )}
@@ -486,7 +544,7 @@ export default function PosPage() {
                     )}
                     <span className="font-body text-sm font-semibold text-charcoal leading-snug line-clamp-2 pr-8">{p.name}</span>
                     <span className="mt-2 flex items-center gap-1.5">
-                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(Number(p.price ?? 0))}</span>
+                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(roundUpTo100(Number(p.price ?? 0)))}</span>
                       <span className="font-body text-xs text-warm-gray">{p.unit === 'kg' ? '/ kg' : 'c/u'}</span>
                       {p.unit === 'kg' && <Scale size={13} className="text-warm-gray" />}
                     </span>
@@ -526,7 +584,7 @@ export default function PosPage() {
                   <div className="flex-1 min-w-0">
                     <div className="font-body text-sm font-semibold text-charcoal truncate">{i.name}</div>
                     <div className="font-num text-xs text-warm-gray">
-                      {i.unit === 'kg' ? `${fmtKg(i.quantity)} × ${fmtARS(i.unit_price)}/kg` : `${i.quantity} × ${fmtARS(i.unit_price)}`}
+                      {i.unit === 'kg' ? `${fmtKg(i.quantity)} × ${fmtARS(i.unit_price)}/kg` : `${i.quantity} ${i.unit} × ${fmtARS(i.unit_price)}`}
                     </div>
                   </div>
                   {i.unit !== 'kg' && (
@@ -575,7 +633,7 @@ export default function PosPage() {
           key={unitSelecting.id}
           product={unitSelecting}
           onCancel={() => { setUnitSelecting(null); focusSearch() }}
-          onConfirm={(amount) => addUnitSelection(unitSelecting, amount)}
+          onConfirm={(option) => addUnitSelection(unitSelecting, option)}
         />
       )}
 
@@ -585,6 +643,14 @@ export default function PosPage() {
           total={total}
           onCancel={() => { setPayOpen(false); focusSearch() }}
           onCharge={charge}
+        />
+      )}
+
+      {changePaymentOpen && lastSale && (
+        <ChangePaymentModal
+          currentMethod={lastSale.method}
+          onCancel={() => setChangePaymentOpen(false)}
+          onConfirm={changeLastSalePayment}
         />
       )}
 
@@ -644,13 +710,9 @@ function UnitQuantityModal({
 }: {
   product: Product
   onCancel: () => void
-  onConfirm: (amount: number) => void
+  onConfirm: (option: SaleOption) => void
 }) {
-  const options = [
-    { amount: 1, label: 'Unidad', detail: '1 unidad' },
-    { amount: 6, label: 'Media docena', detail: '6 unidades' },
-    { amount: 12, label: 'Docena', detail: '12 unidades' },
-  ]
+  const options = saleOptionsFor(product)
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
@@ -665,15 +727,15 @@ function UnitQuantityModal({
         <div className="p-5 grid gap-3">
           {options.map((option) => (
             <button
-              key={option.amount}
-              onClick={() => onConfirm(option.amount)}
+              key={`${option.label}-${option.quantity}`}
+              onClick={() => onConfirm(option)}
               className="flex items-center justify-between gap-4 px-5 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-left hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors group"
             >
               <span>
                 <span className="block font-body text-base font-bold">{option.label}</span>
-                <span className="block font-body text-xs text-warm-gray group-hover:text-cream/70">{option.detail}</span>
+                <span className="block font-body text-xs text-warm-gray group-hover:text-cream/70">Descuenta {option.quantity.toLocaleString('es-AR', { maximumFractionDigits: 3 })} {product.unit} de stock</span>
               </span>
-              <span className="font-num text-xl font-bold">{fmtARS(Number(product.price ?? 0) * option.amount)}</span>
+              <span className="font-num text-xl font-bold">{fmtARS(roundUpTo100(Number(option.price) > 0 ? Number(option.price) : Number(product.price ?? 0) * option.quantity))}</span>
             </button>
           ))}
         </div>
@@ -835,7 +897,7 @@ function WeighModal({
         <div className="p-5 flex flex-col gap-4">
           <div>
             <div className="font-body text-base font-semibold text-charcoal">{product.name}</div>
-            <div className="font-body text-xs text-warm-gray">{fmtARS(Number(product.price ?? 0))} / kg</div>
+            <div className="font-body text-xs text-warm-gray">{fmtARS(roundUpTo100(Number(product.price ?? 0)))} / kg</div>
           </div>
 
           {/* Visor: el peso que se va a cargar */}
@@ -877,7 +939,7 @@ function WeighModal({
           <div className="flex items-center justify-between bg-cream-dark rounded-xl px-4 py-3">
             <span className="font-body text-sm text-warm-gray">Subtotal</span>
             <span className="font-num text-2xl font-bold text-burgundy">
-              {fmtARS((valido ? kg : 0) * Number(product.price ?? 0))}
+              {fmtARS(roundUpTo100((valido ? kg : 0) * Number(product.price ?? 0)))}
             </span>
           </div>
 
@@ -894,10 +956,7 @@ function WeighModal({
   )
 }
 
-/**
- * Cobro. Los medios que no son efectivo cierran la venta de una;
- * en efectivo se pide con cuánto paga y se muestra el vuelto en grande.
- */
+/** El medio se elige primero y siempre se confirma en un segundo paso. */
 function PayModal({
   total, onCancel, onCharge,
 }: {
@@ -905,7 +964,7 @@ function PayModal({
   onCancel: () => void
   onCharge: (method: string, change: number | null) => void
 }) {
-  const [cashStep, setCashStep] = useState(false)
+  const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [paidWith, setPaidWith] = useState('')
   const cashRef = useRef<HTMLInputElement>(null)
 
@@ -923,40 +982,45 @@ function PayModal({
     return [...set].filter(v => v > total).sort((a, b) => a - b).slice(0, 5)
   }, [total])
 
-  useEffect(() => { if (cashStep) cashRef.current?.focus() }, [cashStep])
+  useEffect(() => { if (selectedMethod === 'Efectivo') cashRef.current?.focus() }, [selectedMethod])
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b border-border">
           <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2">
-            {cashStep && (
-              <button onClick={() => setCashStep(false)} className="text-warm-gray hover:text-charcoal"><ArrowLeft size={18} /></button>
+            {selectedMethod && (
+              <button onClick={() => setSelectedMethod(null)} className="text-warm-gray hover:text-charcoal"><ArrowLeft size={18} /></button>
             )}
             Cobrar <span className="font-num">{fmtARS(total)}</span>
           </h2>
           <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
         </div>
 
-        {!cashStep ? (
+        {!selectedMethod ? (
           <div className="p-5">
             <p className="font-body text-xs text-warm-gray uppercase tracking-wide mb-3">¿Cómo pagó?</p>
             <button
               autoFocus
-              onClick={() => setCashStep(true)}
+              onClick={() => setSelectedMethod('Efectivo')}
               className="w-full flex items-center justify-center gap-2 px-4 py-5 mb-3 rounded-xl bg-burgundy text-cream font-body text-lg font-bold hover:bg-burgundy-dark transition-colors">
               <Banknote size={22} /> Efectivo
             </button>
             <div className="grid grid-cols-1 gap-3">
               {PAYMENT_METHODS.filter(m => m !== 'Efectivo').map(m => (
-                <button key={m} onClick={() => onCharge(m, null)}
+                <button key={m} onClick={() => setSelectedMethod(m)}
                   className="px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream hover:border-burgundy transition-colors">
                   {m}
                 </button>
               ))}
             </div>
+            <button onClick={() => setSelectedMethod('Consumo interno')}
+              className="mt-5 mx-auto flex items-center gap-1.5 px-2 py-1 text-warm-gray/70 hover:text-burgundy font-body text-[11px] transition-colors"
+              title="Registra la salida de stock sin sumar dinero a la caja">
+              <Utensils size={13} /> Consumo interno
+            </button>
           </div>
-        ) : (
+        ) : selectedMethod === 'Efectivo' ? (
           <div className="p-5 flex flex-col gap-4">
             <div className="flex flex-col gap-1">
               <label className="font-body text-xs text-warm-gray uppercase tracking-wide">¿Con cuánto paga?</label>
@@ -1004,7 +1068,55 @@ function PayModal({
               Podés cobrar sin cargar con cuánto paga: el vuelto es sólo una ayuda.
             </p>
           </div>
+        ) : (
+          <div className="p-5 flex flex-col gap-4">
+            <div className={`rounded-2xl border p-5 text-center ${selectedMethod === 'Consumo interno' ? 'bg-amber-50 border-amber-200' : 'bg-cream-dark border-border'}`}>
+              {selectedMethod === 'Consumo interno' ? <Utensils size={28} className="mx-auto text-amber-700 mb-2" /> : <Banknote size={28} className="mx-auto text-burgundy mb-2" />}
+              <div className="font-body text-lg font-bold text-charcoal">{selectedMethod}</div>
+              <p className="font-body text-xs text-warm-gray mt-1">
+                {selectedMethod === 'Consumo interno'
+                  ? 'Descuenta el stock, pero registra $0 de ingreso y no suma dinero a la caja.'
+                  : 'Confirmá recién cuando la transferencia esté realizada. Podés volver y elegir otro medio.'}
+              </p>
+            </div>
+            <button onClick={() => onCharge(selectedMethod, null)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark transition-colors">
+              <CircleDollarSign size={20} /> {selectedMethod === 'Consumo interno' ? 'Registrar consumo' : 'Confirmar transferencia'}
+            </button>
+            <button onClick={() => setSelectedMethod(null)} className="font-body text-sm text-warm-gray hover:text-charcoal">
+              Cambiar medio de pago
+            </button>
+          </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function ChangePaymentModal({
+  currentMethod, onCancel, onConfirm,
+}: {
+  currentMethod: string
+  onCancel: () => void
+  onConfirm: (method: string) => void
+}) {
+  const methods = [...PAYMENT_METHODS, 'Consumo interno']
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <h2 className="font-sans text-lg font-bold text-charcoal">Corregir medio de pago</h2>
+          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+        </div>
+        <div className="p-5 flex flex-col gap-3">
+          {methods.map((method) => (
+            <button key={method} onClick={() => onConfirm(method)} disabled={method === currentMethod}
+              className="px-4 py-3.5 rounded-xl border-2 border-burgundy/20 font-body text-sm font-semibold hover:bg-burgundy hover:text-cream disabled:bg-cream-dark disabled:text-warm-gray disabled:border-border">
+              {method}{method === currentMethod ? ' · actual' : ''}
+            </button>
+          ))}
+          <p className="font-body text-[11px] text-warm-gray text-center">Sólo cambia cómo se contabiliza; el stock no vuelve a descontarse.</p>
+        </div>
       </div>
     </div>
   )
@@ -1022,7 +1134,7 @@ function FreeAmountModal({
   const value = parseNum(amount)
   const valido = !isNaN(value) && value > 0
 
-  const confirmar = () => { if (valido) onConfirm(desc.trim(), Math.round(value * 100) / 100) }
+  const confirmar = () => { if (valido) onConfirm(desc.trim(), roundUpTo100(value)) }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
@@ -1090,7 +1202,7 @@ function CloseCajaModal({
       await syncFirst() // subir pendientes antes de calcular
       const [{ data: salesData }, { data: itemsData }] = await Promise.all([
         supabase.from('sales').select('id, total, payment_method').eq('cash_session_id', session.id),
-        supabase.from('sale_items').select('description, quantity, sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
+        supabase.from('sale_items').select('description, quantity, stock_quantity, sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
       ])
       const rows = salesData ?? []
       const map: Record<string, number> = {}
@@ -1104,7 +1216,7 @@ function CloseCajaModal({
       const qtyByProduct: Record<string, number> = {}
       for (const it of itemsData ?? []) {
         if (it.description.startsWith('__MAYORISTA__:')) continue
-        qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.quantity)
+        qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.stock_quantity ?? it.quantity)
       }
       const top = Object.entries(qtyByProduct).sort((a, b) => b[1] - a[1])[0]
       setTopProduct(top ? top[0] : '—')

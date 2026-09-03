@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { roundUpTo100 } from '@/lib/money'
 import { Printer } from 'lucide-react'
 
 interface Product {
@@ -98,7 +99,7 @@ export default function AdminPricesPage() {
                           <td className="py-1.5 text-right font-num text-sm font-bold text-burgundy whitespace-nowrap">
                             {p.price !== null ? (
                               <>
-                                {fmtARS(Number(p.price))}{' '}
+                                {fmtARS(roundUpTo100(Number(p.price)))}{' '}
                                 <span className="font-normal text-warm-gray text-xs">{unitLabel(p.unit)}</span>
                               </>
                             ) : (

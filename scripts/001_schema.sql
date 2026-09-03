@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS public.products (
   name        TEXT    NOT NULL,
   description TEXT,
   price       NUMERIC(10,2),
+  manual_price BOOLEAN NOT NULL DEFAULT false,
   unit        TEXT    NOT NULL DEFAULT 'unidad',  -- 'unidad' | 'kg'
+  sale_options JSONB NOT NULL DEFAULT '[]'::jsonb,
   category    TEXT,
   image_url   TEXT,
   featured    BOOLEAN NOT NULL DEFAULT false,

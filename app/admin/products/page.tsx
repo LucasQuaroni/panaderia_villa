@@ -3,13 +3,22 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { AlertTriangle, Plus, Pencil, Trash2, Star, RotateCcw, Save, X, Search } from 'lucide-react'
+import { roundUpTo100 } from '@/lib/money'
+
+interface SaleOption {
+  label: string
+  quantity: number
+  price?: number | null
+}
 
 interface Product {
   id: string
   name: string
   description: string | null
   price: number | null
+  manual_price: boolean
   unit: string
+  sale_options: SaleOption[]
   category: string | null
   image_url: string | null
   featured: boolean
@@ -27,7 +36,13 @@ const emptyProduct: ProductForm = {
   name: '',
   description: '',
   price: null,
+  manual_price: true,
   unit: 'unidad',
+  sale_options: [
+    { label: 'Unidad', quantity: 1 },
+    { label: 'Media docena', quantity: 6 },
+    { label: 'Docena', quantity: 12 },
+  ],
   category: 'Panes',
   image_url: '',
   featured: false,
@@ -153,7 +168,15 @@ export default function AdminProductsPage() {
 
   const openEdit = (p: Product) => {
     const { id, ...rest } = p
-    setForm(rest)
+    setForm({
+      ...rest,
+      manual_price: p.manual_price ?? false,
+      sale_options: Array.isArray(p.sale_options) && p.sale_options.length > 0
+        ? p.sale_options
+        : p.unit === 'unidad'
+          ? emptyProduct.sale_options.map((option) => ({ ...option }))
+          : [],
+    })
     setEditingId(id)
   }
 
@@ -170,7 +193,21 @@ export default function AdminProductsPage() {
 
   const handleSave = async () => {
     setSaving(true)
-    const payload = { ...form }
+    const payload = {
+      ...form,
+      price: form.price === null ? null : roundUpTo100(Number(form.price)),
+      sale_options: form.unit === 'kg'
+        ? []
+        : form.sale_options
+            .map((option) => ({
+              label: option.label.trim(),
+              quantity: Number(option.quantity),
+              price: option.price === null || option.price === undefined || Number(option.price) <= 0
+                ? null
+                : roundUpTo100(Number(option.price)),
+            }))
+            .filter((option) => option.label && Number.isFinite(option.quantity) && option.quantity > 0),
+    }
     if (editingId === 'new') {
       await supabase.from('products').insert(payload)
     } else {
@@ -253,7 +290,7 @@ export default function AdminProductsPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="font-sans text-3xl font-bold text-charcoal">Productos</h1>
-          <p className="font-body text-warm-gray mt-1">Gestioná los productos del catálogo.</p>
+          <p className="font-body text-warm-gray mt-1">Gestioná el catálogo. Los productos de reventa se pueden crear acá sin receta.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -401,7 +438,7 @@ export default function AdminProductsPage() {
                   <input name="price" type="number" value={form.price ?? ''} onChange={handleChange}
                     className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
                     placeholder="0.00" min="0" step="0.01" />
-                  <span className="font-body text-[11px] text-warm-gray">Se guarda el precio exacto. El redondeo se aplica al renglón dentro del carrito.</span>
+                  <span className="font-body text-[11px] text-warm-gray">Al guardar se redondea hacia arriba al próximo múltiplo de $100.</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Unidad</label>
@@ -410,6 +447,43 @@ export default function AdminProductsPage() {
                     {UNITS.map(u => <option key={u}>{u}</option>)}
                   </select>
                 </div>
+                <label className="sm:col-span-2 flex items-start gap-2 cursor-pointer rounded-xl border border-border bg-cream/40 p-3">
+                  <input type="checkbox" name="manual_price" checked={form.manual_price} onChange={handleChange}
+                    className="w-4 h-4 mt-0.5 accent-burgundy" />
+                  <span>
+                    <span className="block font-body text-sm font-semibold text-charcoal">Precio manual</span>
+                    <span className="block font-body text-xs text-warm-gray">La receta puede seguir calculando un sugerido, pero no reemplazará este precio.</span>
+                  </span>
+                </label>
+                {form.unit !== 'kg' && (
+                  <div className="sm:col-span-2 rounded-xl border border-border p-4">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div>
+                        <div className="font-body text-xs text-warm-gray uppercase tracking-wide">Presentaciones en mostrador</div>
+                        <p className="font-body text-[11px] text-warm-gray mt-1">La cantidad indica cuánto stock base descuenta. El precio propio es opcional; vacío se calcula proporcionalmente.</p>
+                      </div>
+                      <button type="button" onClick={() => setForm((previous) => ({ ...previous, sale_options: [...previous.sale_options, { label: '', quantity: 1 }] }))}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-burgundy/10 text-burgundy font-body text-xs font-semibold">
+                        <Plus size={13} /> Agregar
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {form.sale_options.map((option, index) => (
+                        <div key={index} className="grid grid-cols-[1fr_80px] sm:grid-cols-[1fr_100px_110px_auto] gap-2 items-center">
+                          <input value={option.label} onChange={(event) => setForm((previous) => ({ ...previous, sale_options: previous.sale_options.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))}
+                            placeholder="Ej.: Medio" className="px-3 py-2 border border-border rounded-lg font-body text-sm" />
+                          <input type="number" min="0.001" step="any" value={option.quantity} onChange={(event) => setForm((previous) => ({ ...previous, sale_options: previous.sale_options.map((item, itemIndex) => itemIndex === index ? { ...item, quantity: Number(event.target.value) } : item) }))}
+                            aria-label="Cantidad de stock" title="Cantidad de stock" className="px-3 py-2 border border-border rounded-lg font-num text-sm" />
+                          <input type="number" min="0" step="100" value={option.price ?? ''} onChange={(event) => setForm((previous) => ({ ...previous, sale_options: previous.sale_options.map((item, itemIndex) => itemIndex === index ? { ...item, price: event.target.value === '' ? null : Number(event.target.value) } : item) }))}
+                            aria-label="Precio propio" placeholder="$ opcional" className="px-3 py-2 border border-border rounded-lg font-num text-sm" />
+                          <button type="button" onClick={() => setForm((previous) => ({ ...previous, sale_options: previous.sale_options.filter((_, itemIndex) => itemIndex !== index) }))}
+                            className="p-2 text-warm-gray hover:text-red-500"><Trash2 size={15} /></button>
+                        </div>
+                      ))}
+                      {form.sale_options.length === 0 && <p className="font-body text-xs text-warm-gray">Sin opciones: al tocarlo se agregará una unidad directamente.</p>}
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-col gap-1">
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Categoría</label>
                   <select name="category" value={form.category ?? ''} onChange={handleChange}
@@ -504,7 +578,7 @@ export default function AdminProductsPage() {
                   </td>
                   <td className="px-4 py-3 hidden md:table-cell">
                     <span className="font-num text-sm text-charcoal">
-                      {p.price !== null ? `$${Number(p.price).toLocaleString('es-AR', { maximumFractionDigits: 2 })} / ${p.unit}` : '—'}
+                      {p.price !== null ? `$${roundUpTo100(Number(p.price)).toLocaleString('es-AR', { maximumFractionDigits: 0 })} / ${p.unit}` : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">

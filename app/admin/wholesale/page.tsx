@@ -125,7 +125,7 @@ export default function WholesalePage() {
     return Number(recipe.yield_qty) > 0 ? total / Number(recipe.yield_qty) : total
   }, [recipes])
 
-  const wholesalePrice = useCallback((product: Product) => Number(priceSettings[product.id]?.price ?? product.price ?? 0), [priceSettings])
+  const wholesalePrice = useCallback((product: Product) => roundUpTo100(Number(priceSettings[product.id]?.price ?? product.price ?? 0)), [priceSettings])
   const total = cart.reduce((sum, item) => sum + lineSubtotal(item), 0)
 
   const addProduct = (product: Product) => {
@@ -179,7 +179,7 @@ export default function WholesalePage() {
     const cost = costFor(product.id)
     if (cost === null) return Number((priceDrafts[product.id] ?? '').replace(',', '.')) || 0
     const markup = Number((markupDrafts[product.id] ?? '').replace(',', '.'))
-    return cost * (1 + (Number.isFinite(markup) ? markup : 0) / 100)
+    return roundUpTo100(cost * (1 + (Number.isFinite(markup) ? markup : 0) / 100))
   }
 
   const savePrice = async (product: Product) => {
@@ -187,10 +187,11 @@ export default function WholesalePage() {
     const cost = costFor(product.id)
     const rawMarkup = markupDrafts[product.id] ?? ''
     const markup = rawMarkup === '' ? null : Number(rawMarkup.replace(',', '.'))
-    const price = cost === null
+    const rawPrice = cost === null
       ? Number((priceDrafts[product.id] ?? '').replace(',', '.'))
       : cost * (1 + (markup ?? 0) / 100)
-    if (!Number.isFinite(price) || price < 0 || (markup !== null && (!Number.isFinite(markup) || markup < 0))) return
+    if (!Number.isFinite(rawPrice) || rawPrice < 0 || (markup !== null && (!Number.isFinite(markup) || markup < 0))) return
+    const price = roundUpTo100(rawPrice)
     const next = { ...priceSettings, [product.id]: { markup_pct: cost === null ? null : markup, price } }
     const error = await writeJsonSetting(supabase, PRICES_KEY, next)
     if (error) setMessage(`No se pudo guardar el precio mayorista: ${error}`)

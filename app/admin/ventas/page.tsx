@@ -12,6 +12,7 @@ interface SaleItem {
   description: string
   unit: string
   quantity: number
+  stock_quantity?: number | null
   unit_price: number
   subtotal: number
 }
@@ -48,7 +49,7 @@ export default function VentasPage() {
     end.setDate(end.getDate() + 1)
     const { data } = await supabase
       .from('sales')
-      .select('id, sold_at, payment_method, total, items:sale_items(id, description, unit, quantity, unit_price, subtotal)')
+      .select('id, sold_at, payment_method, total, items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
       .gte('sold_at', start.toISOString())
       .lt('sold_at', end.toISOString())
       .order('sold_at', { ascending: false })
@@ -64,7 +65,7 @@ export default function VentasPage() {
   const fmt = (n: number) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
   const fmtTime = (s: string) => new Date(s).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
-  const fmtQty = (q: number, unit: string) => unit === 'kg' ? `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : `${q}`
+  const fmtQty = (q: number, unit: string) => unit === 'kg' ? `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} ${unit}`
 
   const methods = ['Todos', ...Array.from(new Set(sales.map(s => s.payment_method ?? '—')))]
   const filtered = method === 'Todos' ? sales : sales.filter(s => (s.payment_method ?? '—') === method)
@@ -77,7 +78,7 @@ export default function VentasPage() {
   for (const s of sales) byMethod[s.payment_method ?? '—'] = (byMethod[s.payment_method ?? '—'] ?? 0) + Number(s.total)
 
   const qtyByProduct: Record<string, number> = {}
-  for (const s of filtered) for (const it of s.items) qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.quantity)
+  for (const s of filtered) for (const it of s.items) qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.stock_quantity ?? it.quantity)
   const topProducts = Object.entries(qtyByProduct).sort((a, b) => b[1] - a[1]).slice(0, 5)
 
   const isToday = day === todayStr()

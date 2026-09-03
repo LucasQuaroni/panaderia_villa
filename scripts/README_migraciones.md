@@ -10,10 +10,12 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
    mostrador (POS) y las funciones `register_sale` / `void_sale`. Requiere la `002`.
 4. **`005_stock.sql`** — control de stock: tandas de producción, umbrales de
    stock bajo, ajustes/mermas y vistas de stock actual. Requiere la `002` y la `004`.
+5. **`006_precios_presentaciones_consumo.sql`** — precios manuales, redondeo a
+   $100, presentaciones configurables y consumo interno. Requiere la `004`.
 
-La baja lógica, el fondo de caja, los clientes mayoristas, los márgenes, el
-stock base diario y el redondeo comercial usan las tablas existentes y se
-gestionan automáticamente desde la aplicación; no requieren scripts extra.
+La baja lógica, el fondo de caja, los clientes mayoristas, los márgenes y el
+stock base diario usan las tablas existentes y se gestionan automáticamente
+desde la aplicación.
 
 ### Cómo correr cada archivo
 
@@ -73,9 +75,13 @@ Después de correr `004`:
 3. Tocá un producto:
    - Si se vende **por kg**, se abre "Pesar" → escribí el peso (cuando conectes
      la balanza, se completará solo) → Agregar al carrito.
-   - Si se vende **por unidad**, se agrega directo (podés sumar/restar cantidad).
+   - Si se vende **por unidad**, elegís una de las presentaciones configuradas
+     para ese producto (unidad, medio, docena, feta, etc.).
 4. Se va armando el **carrito** a la derecha, con el total.
 5. **Cobrar** → elegí el medio de pago → queda registrada.
+   Transferencia pide una confirmación antes de cerrar y la última venta permite
+   corregir el medio de pago sin volver a descontar stock.
+   El enlace discreto **Consumo interno** descuenta stock y registra $0 de ingreso.
 6. Al final del día, **Cerrar caja** muestra el total por medio de pago, el
    efectivo esperado vs. lo contado, y la diferencia.
 

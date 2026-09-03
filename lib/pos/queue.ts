@@ -12,6 +12,7 @@ export interface PendingSaleItem {
   description: string
   unit: string
   quantity: number
+  stock_quantity?: number
   unit_price: number
   subtotal: number
 }
@@ -57,4 +58,14 @@ export function addPending(sale: PendingSale) {
 
 export function removePending(clientUuid: string) {
   write(read().filter((s) => s.client_uuid !== clientUuid))
+}
+
+/** Cambia el medio de una venta que todavia no se sincronizo. */
+export function updatePendingPayment(clientUuid: string, paymentMethod: string): boolean {
+  const list = read()
+  const index = list.findIndex((sale) => sale.client_uuid === clientUuid)
+  if (index === -1) return false
+  list[index] = { ...list[index], payment_method: paymentMethod }
+  write(list)
+  return true
 }

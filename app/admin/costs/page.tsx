@@ -6,6 +6,7 @@ import {
   Package, Calculator, Plus, Pencil, Trash2, Save, X,
   TrendingUp, ChevronDown, ChevronRight, Search,
 } from 'lucide-react'
+import { roundUpTo100 } from '@/lib/money'
 
 interface RawMaterial {
   id: string
@@ -37,6 +38,7 @@ interface Product {
   name: string
   unit: string
   price: number | null
+  manual_price: boolean
 }
 
 const UNITS = ['kg', 'gramo', 'litro', 'ml', 'unidad', 'docena']
@@ -63,6 +65,8 @@ export default function AdminCostsPage() {
   const [recipeSearch, setRecipeSearch] = useState('')
   const [productName, setProductName] = useState('')          // nombre del producto (permite crear al vuelo)
   const [saleMode, setSaleMode] = useState<'kg' | 'unidad'>('unidad') // modalidad de venta de la receta
+  const [manualPrice, setManualPrice] = useState(false)
+  const [manualPriceValue, setManualPriceValue] = useState('')
   const [savingRecipe, setSavingRecipe] = useState(false)
   const [recipeError, setRecipeError] = useState('')
 
@@ -75,7 +79,7 @@ export default function AdminCostsPage() {
   const fetchRecipes = useCallback(async () => {
     const [recRes, prodRes] = await Promise.all([
       supabase.from('recipes').select(`*, items:recipe_items(*, raw_material:raw_materials(*))`).order('created_at'),
-      supabase.from('products').select('id, name, unit, price').eq('active', true).order('name'),
+      supabase.from('products').select('id, name, unit, price, manual_price').eq('active', true).order('name'),
     ])
     const availableProducts = (prodRes.data ?? []) as Product[]
     const availableIds = new Set(availableProducts.map((product) => product.id))
@@ -135,7 +139,7 @@ export default function AdminCostsPage() {
   const calcSuggestedPrice = (recipe: Recipe): number => {
     const cost = calcRecipeCost(recipe)
     const perUnit = recipe.yield_qty > 0 ? cost / recipe.yield_qty : cost
-    return perUnit * (1 + recipe.markup_pct / 100)
+    return roundUpTo100(perUnit * (1 + recipe.markup_pct / 100))
   }
 
   // ── Recipes CRUD ──────────────────────────────────────────────────────────────
@@ -149,6 +153,8 @@ export default function AdminCostsPage() {
     })
     setProductName('')
     setSaleMode('unidad')
+    setManualPrice(false)
+    setManualPriceValue('')
     setRecipeItems([{ raw_material_id: '', quantity: 1 }])
     setIsNewRecipe(true)
   }
@@ -159,6 +165,8 @@ export default function AdminCostsPage() {
     const prod = products.find(p => p.id === r.product_id)
     setProductName(prod?.name ?? '')
     setSaleMode(prod?.unit === 'kg' ? 'kg' : 'unidad')
+    setManualPrice(prod?.manual_price ?? false)
+    setManualPriceValue(prod?.price === null || prod?.price === undefined ? '' : String(prod.price))
     setRecipeItems(r.items.map(i => ({ ...i })))
     setIsNewRecipe(false)
   }
@@ -175,6 +183,13 @@ export default function AdminCostsPage() {
     if (!editingRecipe) return
     setRecipeError('')
     setSavingRecipe(true)
+
+    const typedManualPrice = Number(manualPriceValue.replace(',', '.'))
+    if (manualPrice && (!Number.isFinite(typedManualPrice) || typedManualPrice <= 0)) {
+      setRecipeError('Ingresá un precio manual mayor que cero.')
+      setSavingRecipe(false)
+      return
+    }
 
     // Resolver el producto: usar el existente o crearlo al vuelo por nombre.
     let productId = editingRecipe.product_id
@@ -193,6 +208,7 @@ export default function AdminCostsPage() {
         const { data: newProd, error: productError } = await supabase.from('products').insert({
           name: typed,
           unit: saleMode,
+          manual_price: manualPrice,
           active: true,
         }).select().single()
         if (productError) { setRecipeError(productError.message); setSavingRecipe(false); return }
@@ -245,10 +261,12 @@ export default function AdminCostsPage() {
     const yieldQty = editingRecipe.yield_qty ?? 1
     const perUnit = yieldQty > 0 ? finalCost / yieldQty : finalCost
     const markup = editingRecipe.markup_pct ?? 300
-    const suggestedPrice = perUnit * (1 + markup / 100)
+    const suggestedPrice = roundUpTo100(perUnit * (1 + markup / 100))
 
-    // Actualiza precio y modalidad (kg/unidad) del producto de forma coherente.
-    await supabase.from('products').update({ price: suggestedPrice, unit: saleMode }).eq('id', productId)
+    const finalPrice = manualPrice ? roundUpTo100(typedManualPrice) : suggestedPrice
+
+    // El precio manual se conserva aunque luego cambien ingredientes o margen.
+    await supabase.from('products').update({ price: finalPrice, unit: saleMode, manual_price: manualPrice }).eq('id', productId)
 
     await fetchRecipes() // refresca también la lista de productos
     setSavingRecipe(false)
@@ -269,7 +287,7 @@ export default function AdminCostsPage() {
       return sum + item.quantity * mat.unit_price
     }, 0)
     const perUnit = (editingRecipe?.yield_qty ?? 1) > 0 ? cost / (editingRecipe?.yield_qty ?? 1) : cost
-    const suggested = perUnit * (1 + (editingRecipe?.markup_pct ?? 300) / 100)
+    const suggested = roundUpTo100(perUnit * (1 + (editingRecipe?.markup_pct ?? 300) / 100))
     return { cost, perUnit, suggested }
   }
 
@@ -482,6 +500,14 @@ export default function AdminCostsPage() {
                         setProductName(val)
                         const match = products.find(p => p.name.toLowerCase() === val.trim().toLowerCase())
                         setEditingRecipe(prev => ({ ...prev!, product_id: match ? match.id : '' }))
+                        if (match) {
+                          setSaleMode(match.unit === 'kg' ? 'kg' : 'unidad')
+                          setManualPrice(match.manual_price ?? false)
+                          setManualPriceValue(match.price === null ? '' : String(match.price))
+                        } else {
+                          setManualPrice(false)
+                          setManualPriceValue('')
+                        }
                       }}
                       disabled={!isNewRecipe}
                       placeholder="Elegí un producto o escribí uno nuevo"
@@ -529,6 +555,24 @@ export default function AdminCostsPage() {
                         onChange={e => setEditingRecipe(prev => ({ ...prev!, markup_pct: e.target.value === '' ? undefined : Number(e.target.value) }))}
                         className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy" />
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-cream/30 p-4 flex flex-col gap-3">
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input type="checkbox" checked={manualPrice} onChange={(event) => setManualPrice(event.target.checked)} className="w-4 h-4 mt-0.5 accent-burgundy" />
+                      <span>
+                        <span className="block font-body text-sm font-semibold text-charcoal">Usar precio manual e ignorar la receta</span>
+                        <span className="block font-body text-xs text-warm-gray">El costo y el sugerido siguen visibles como referencia.</span>
+                      </span>
+                    </label>
+                    {manualPrice && (
+                      <div className="flex flex-col gap-1">
+                        <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Precio de venta</label>
+                        <input type="number" min="0" step="100" value={manualPriceValue} onChange={(event) => setManualPriceValue(event.target.value)}
+                          placeholder="0" className="px-3 py-2.5 border border-border rounded-lg font-num text-sm focus:outline-none focus:border-burgundy bg-white" />
+                        <span className="font-body text-[11px] text-warm-gray">Se redondea hacia arriba al próximo múltiplo de $100.</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Ingredients */}
