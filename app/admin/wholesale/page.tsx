@@ -1,10 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { readJsonSetting, writeJsonSetting } from '@/lib/json-settings'
 import { roundUpTo100 } from '@/lib/money'
 import { useScale, EMPTY_KG } from '@/hooks/use-scale'
+import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
 import { AlertTriangle, Cable, CheckCircle2, Minus, Plus, Printer, Save, Scale, Search, ShoppingCart, Trash2, Users, X } from 'lucide-react'
 
 interface Customer { id:string; business_name:string; contact_name:string; tax_id:string; phone:string; address:string; has_current_account:boolean; active:boolean }
@@ -20,6 +21,7 @@ const cls='w-full px-3 py-2.5 border border-border rounded-lg font-body text-sm 
 
 export default function WholesalePage(){
  const supabase=createClient(),scale=useScale(); const [role,setRole]=useState<Role>(null),[tab,setTab]=useState<Tab>('sale'),[customers,setCustomers]=useState<Customer[]>([]),[products,setProducts]=useState<Product[]>([]),[recipes,setRecipes]=useState<Recipe[]>([]),[prices,setPrices]=useState<Record<string,PriceSetting>>({}),[accountSales,setAccountSales]=useState<Record<string,number>>({}),[accountPayments,setAccountPayments]=useState<Record<string,number>>({}),[sessionId,setSessionId]=useState<string|null>(null),[carts,setCarts]=useState<[Cart,Cart]>([blank(),blank()]),[active,setActive]=useState<0|1>(0),[search,setSearch]=useState(''),[letter,setLetter]=useState<string|null>(null),[customerSearch,setCustomerSearch]=useState(''),[weighing,setWeighing]=useState<Product|null>(null),[modal,setModal]=useState<Customer|'new'|null>(null),[paymentCustomer,setPaymentCustomer]=useState<Customer|null>(null),[message,setMessage]=useState(''),[error,setError]=useState(''),[saving,setSaving]=useState(false),[loading,setLoading]=useState(true),[markupDrafts,setMarkupDrafts]=useState<Record<string,string>>({}),[priceDrafts,setPriceDrafts]=useState<Record<string,string>>({}),[lastTransfer,setLastTransfer]=useState<{id:string;customer:string;total:number;items:CartItem[]}|null>(null)
+ const weighingCartRef=useRef<CartIndex>(0)
  const load=useCallback(async()=>{
   setLoading(true);setError('')
   const {data:{user}}=await supabase.auth.getUser()
@@ -57,11 +59,13 @@ export default function WholesalePage(){
  const listed=useMemo(()=>products.filter(product=>product.show_on_pos!==false&&norm(product.name).includes(norm(search))&&(!letter||norm(product.name).startsWith(norm(letter)))&&price(product)>0),[products,search,letter,price])
  const letters=useMemo(()=>new Set(products.filter(product=>product.show_on_pos!==false).map(product=>norm(product.name)[0]?.toUpperCase())),[products])
  const clientList=useMemo(()=>customers.filter(customer=>norm(`${customer.business_name} ${customer.contact_name} ${customer.tax_id} ${customer.phone}`).includes(norm(customerSearch))),[customers,customerSearch])
- const edit=(fn:(current:Cart)=>Cart)=>setCarts(previous=>previous.map((current,index)=>index===active?fn(current):current)as[Cart,Cart])
+ const editAt=(index:CartIndex,fn:(current:Cart)=>Cart)=>setCarts(previous=>updateCartAt(previous,index,fn))
+ const edit=(fn:(current:Cart)=>Cart)=>editAt(active,fn)
  const costFor=useCallback((productId:string)=>{const recipe=recipes.find(item=>item.product_id===productId);if(!recipe)return null;const totalCost=(recipe.items??[]).reduce((sum,item)=>sum+Number(item.quantity)*Number(item.raw_material?.unit_price??0),0);return Number(recipe.yield_qty)>0?totalCost/Number(recipe.yield_qty):totalCost},[recipes])
  const draftPrice=(product:Product)=>{const cost=costFor(product.id);if(cost===null)return parse(priceDrafts[product.id]??'')||0;const markup=parse(markupDrafts[product.id]??'0');return roundUpTo100(cost*(1+(Number.isFinite(markup)?markup:0)/100))}
  const balanceFor=(customerId:string)=>(accountSales[customerId]??0)-(accountPayments[customerId]??0)
- const add=(product:Product,quantity=1)=>edit(current=>{const existing=current.items.find(item=>item.product.id===product.id);if(existing){const next=Math.round((existing.quantity+quantity)*1000)/1000;return {...current,items:current.items.map(item=>item===existing?{...item,quantity:next,draft:String(next).replace('.',',')}:item)}}return {...current,items:[...current.items,{product,quantity,unitPrice:price(product),draft:quantity.toFixed(product.unit==='kg'?3:0).replace('.',',')}]}})
+ const add=(product:Product,quantity=1,target:CartIndex=active)=>editAt(target,current=>{const existing=current.items.find(item=>item.product.id===product.id);if(existing){const next=Math.round((existing.quantity+quantity)*1000)/1000;return {...current,items:current.items.map(item=>item===existing?{...item,quantity:next,draft:String(next).replace('.',',')}:item)}}return {...current,items:[...current.items,{product,quantity,unitPrice:price(product),draft:quantity.toFixed(product.unit==='kg'?3:0).replace('.',',')}]}})
+ const startWeighing=(product:Product)=>{weighingCartRef.current=active;setWeighing(product)}
  const setDraft=(id:string,draft:string)=>{if(!/^\d*(?:[.,]\d*)?$/.test(draft))return;edit(current=>({...current,items:current.items.map(item=>item.product.id===id?{...item,draft,quantity:Number.isFinite(parse(draft))?parse(draft):item.quantity}:item)}))}
  const remove=(id:string)=>edit(current=>({...current,items:current.items.filter(item=>item.product.id!==id)}))
  const register=async()=>{if(!selected||!sessionId||!cart.items.length)return;if(cart.items.some(item=>!Number.isFinite(parse(item.draft))||parse(item.draft)<=0)){setMessage('Revisá las cantidades antes de confirmar.');return}setSaving(true);const soldItems=cart.items.map(item=>({...item}));const {data,error}=await supabase.rpc('register_wholesale_sale',{p_client_uuid:crypto.randomUUID(),p_cash_session_id:sessionId,p_payment_method:cart.paymentMethod,p_customer_id:selected.id,p_items:soldItems.map(item=>({product_id:item.product.id,description:item.product.name,unit:item.product.unit,quantity:item.quantity,stock_quantity:item.quantity,unit_price:item.unitPrice,subtotal:line(item)}))});setSaving(false);if(error){setMessage(`No se pudo registrar: ${error.message}`);return}if(cart.paymentMethod==='Transferencia')setLastTransfer({id:String(data),customer:selected.business_name,total,items:soldItems});else setLastTransfer(null);edit(()=>blank());setMessage(`Venta mayorista registrada (${cart.paymentMethod}).`);await load()}
@@ -83,7 +87,7 @@ export default function WholesalePage(){
    <div>
     <div className="relative mb-3"><Search size={17} className="absolute left-3 top-3 text-warm-gray"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar producto..." className={`${cls} pl-9`}/></div>
     <div className="flex flex-wrap gap-1 mb-4"><button onClick={()=>setLetter(null)} className={`px-2 h-8 rounded ${!letter?'bg-burgundy text-cream':'bg-white border'}`}>Todos</button>{'ABCDEFGHIJKLMNÑOPQRSTUVWXYZ'.split('').map(l=><button key={l} disabled={!letters.has(l)} onClick={()=>setLetter(letter===l?null:l)} className={`w-8 h-8 rounded ${letter===l?'bg-burgundy text-cream':'bg-white border'} disabled:opacity-30`}>{l}</button>)}</div>
-    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">{listed.map(p=><button key={p.id} onClick={()=>p.unit==='kg'?setWeighing(p):add(p)} className="text-left bg-white border border-border rounded-2xl p-4 hover:border-burgundy"><div className="font-semibold text-sm">{p.name}</div><div className="font-num text-burgundy font-bold mt-2">{fmt(price(p))} <span className="text-xs text-warm-gray">/ {p.unit}</span></div></button>)}</div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">{listed.map(p=><button key={p.id} onClick={()=>p.unit==='kg'?startWeighing(p):add(p)} className="text-left bg-white border border-border rounded-2xl p-4 hover:border-burgundy"><div className="font-semibold text-sm">{p.name}</div><div className="font-num text-burgundy font-bold mt-2">{fmt(price(p))} <span className="text-xs text-warm-gray">/ {p.unit}</span></div></button>)}</div>
    </div>
    <div className="flex flex-col gap-4 h-fit lg:sticky lg:top-8">
     {([0,1] as const).map(index=>{
@@ -110,7 +114,7 @@ export default function WholesalePage(){
     })}
    </div>
   </div>
-  {weighing&&<Weigh product={weighing} scale={scale} onClose={()=>setWeighing(null)} onAdd={kg=>{add(weighing,kg);setWeighing(null)}}/>}
+  {weighing&&<Weigh product={weighing} scale={scale} onClose={()=>setWeighing(null)} onAdd={kg=>{add(weighing,kg,weighingCartRef.current);setWeighing(null)}}/>}
   {lastTransfer&&<TransferReceipt receipt={lastTransfer}/>}
  </div>
  return <div className="max-w-6xl mx-auto"><div className="mb-6"><h1 className="font-sans text-3xl font-bold text-charcoal">Mostrador mayorista</h1><p className="font-body text-warm-gray mt-1">Dos pedidos simultáneos, clientes y cuenta corriente.</p></div>{role==='admin'&&<div className="flex gap-2 mb-5 bg-white border border-border rounded-xl p-1 w-fit">{([['sale','Nueva venta',ShoppingCart],['customers','Clientes y cuentas',Users],['prices','Precios',Save]]as const).map(([v,l,I])=><button key={v} onClick={()=>setTab(v)} className={`px-4 py-2 rounded-lg text-sm font-semibold flex gap-2 items-center ${tab===v?'bg-burgundy text-cream':'text-warm-gray'}`}><I size={16}/>{l}</button>)}</div>}{error&&<div className="mb-4 px-4 py-3 rounded-xl border bg-red-50 border-red-200 text-red-700 text-sm">{error}</div>}{message&&<div className="mb-4 px-4 py-3 rounded-xl border bg-green-50 border-green-200 text-green-800 text-sm">{message}</div>}

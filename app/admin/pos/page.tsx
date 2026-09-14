@@ -24,6 +24,7 @@ import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from
 import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
 import { roundUpTo100 } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
+import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
 
 interface SaleOption {
   label: string
@@ -104,6 +105,9 @@ export default function PosPage() {
   const [pending, setPending] = useState(0)
 
   const scale = useScale()
+  // El destino del pesaje queda fijado al abrir el modal. La lectura de la
+  // balanza sigue siendo global y no depende de los cambios de carrito.
+  const weighingCartRef = useRef<CartIndex>(0)
 
   // Modales
   const [weighing, setWeighing] = useState<Product | null>(null)
@@ -126,7 +130,7 @@ export default function PosPage() {
   const setCart = useCallback((updater: CartItem[] | ((current: CartItem[]) => CartItem[])) => {
     setCarts(previous => {
       const next = typeof updater === 'function' ? updater(previous[activeCartIndex]) : updater
-      return activeCartIndex === 0 ? [next, previous[1]] : [previous[0], next]
+      return updateCartAt(previous, activeCartIndex, () => next)
     })
   }, [activeCartIndex])
 
@@ -283,6 +287,7 @@ export default function PosPage() {
 
   const handleProductClick = useCallback((p: Product) => {
     if (p.unit === 'kg') {
+      weighingCartRef.current = activeCartIndex
       setWeighing(p)
     } else if (saleOptionsFor(p).length > 0) {
       setUnitSelecting(p)
@@ -291,7 +296,7 @@ export default function PosPage() {
       setSearch('')
       focusSearch()
     }
-  }, [addUnitProduct, focusSearch])
+  }, [activeCartIndex, addUnitProduct, focusSearch])
 
   const addUnitSelection = (p: Product, option: SaleOption) => {
     addUnitProduct(p, option)
@@ -302,11 +307,12 @@ export default function PosPage() {
 
   const addWeighed = (p: Product, kg: number) => {
     const unitPrice = roundUpTo100(Number(p.price ?? 0))
-    setCart(prev => [...prev, {
-      key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
-      unit_price: unitPrice, quantity: kg, subtotal: roundUpTo100(kg * unitPrice),
-      stockFactor: 1,
-    }])
+    const targetCart = weighingCartRef.current
+    setCarts(previous => updateCartAt(previous, targetCart, current => [...current, {
+        key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
+        unit_price: unitPrice, quantity: kg, subtotal: roundUpTo100(kg * unitPrice),
+        stockFactor: 1,
+      }]))
     setWeighing(null)
     setSearch('')
     focusSearch()

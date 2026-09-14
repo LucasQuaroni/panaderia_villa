@@ -9,6 +9,7 @@
  */
 
 import { drainFrames, parseWeight } from '../lib/pos/scale.ts'
+import { updateCartAt } from '../lib/pos/cart-pair.ts'
 
 const A = (s: string) => [...s].map(c => c.charCodeAt(0))
 const xor = (b: number[]) => b.reduce((a, c) => a ^ c, 0)
@@ -71,6 +72,22 @@ t('continuo: coma decimal y prefijo de estado', r.frames.map(f => f.kg), [0.865]
 t('rechaza un peso fuera de rango', parseWeight('45.000'), null)
 t('acepta el máximo de la balanza', parseWeight('31.000'), 31)
 t('interpreta gramos sin punto decimal', parseWeight('1250'), 1.25)
+
+// ── Enrutamiento del pesaje con dos carritos ──
+// El destino se captura al iniciar el pesaje. Aunque la selección visual
+// cambie antes de confirmar, el peso debe entrar únicamente en ese carrito.
+const cartsIniciales: [string[], string[]] = [['pan'], ['facturas']]
+let carritoActivo: 0 | 1 = 0
+const destinoDelPesaje = carritoActivo
+carritoActivo = 1
+const cartsConPeso = updateCartAt(cartsIniciales, destinoDelPesaje, cart => [...cart, '0,500 kg'])
+t('el pesaje queda en el carrito que lo inició', cartsConPeso, [['pan', '0,500 kg'], ['facturas']])
+t('la selección puede cambiar durante el pesaje', carritoActivo, 1)
+t('el otro carrito conserva su contenido', cartsConPeso[1], ['facturas'])
+
+const cartsConPesoEnSegundo = updateCartAt(cartsIniciales, 1, cart => [...cart, '1,250 kg'])
+t('el carrito 2 también recibe su propio pesaje', cartsConPesoEnSegundo, [['pan'], ['facturas', '1,250 kg']])
+t('pesar en el carrito 2 no modifica el carrito 1', cartsConPesoEnSegundo[0], ['pan'])
 
 console.log(`\n${pass} ok, ${fail} fallan`)
 process.exit(fail ? 1 : 0)
