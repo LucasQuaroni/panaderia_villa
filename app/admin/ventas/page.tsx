@@ -22,6 +22,15 @@ interface Sale {
   payment_method: string | null
   total: number
   items: SaleItem[]
+  sale_channel?: 'minorista' | 'mayorista'
+  wholesale_customer?: { business_name: string } | null
+}
+interface AccountPayment {
+  id: string
+  amount: number
+  payment_method: string
+  received_at: string
+  customer?: { business_name: string } | null
 }
 
 const todayStr = () => {
@@ -39,6 +48,7 @@ export default function VentasPage() {
   const [day, setDay] = useState(todayStr())
   const [method, setMethod] = useState('Todos')
   const [sales, setSales] = useState<Sale[]>([])
+  const [accountPayments, setAccountPayments] = useState<AccountPayment[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
 
@@ -47,16 +57,25 @@ export default function VentasPage() {
     const start = new Date(day + 'T00:00:00')
     const end = new Date(day + 'T00:00:00')
     end.setDate(end.getDate() + 1)
-    const { data } = await supabase
-      .from('sales')
-      .select('id, sold_at, payment_method, total, items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
-      .gte('sold_at', start.toISOString())
-      .lt('sold_at', end.toISOString())
-      .order('sold_at', { ascending: false })
+    const [{ data }, { data: paymentRows }] = await Promise.all([
+      supabase
+        .from('sales')
+        .select('id, sold_at, payment_method, total, sale_channel, wholesale_customer:wholesale_customers(business_name), items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
+        .gte('sold_at', start.toISOString())
+        .lt('sold_at', end.toISOString())
+        .order('sold_at', { ascending: false }),
+      supabase
+        .from('wholesale_account_payments')
+        .select('id, amount, payment_method, received_at, customer:wholesale_customers(business_name)')
+        .gte('received_at', start.toISOString())
+        .lt('received_at', end.toISOString())
+        .order('received_at', { ascending: false }),
+    ])
     setSales(((data ?? []) as unknown as Sale[]).map((sale) => ({
       ...sale,
       items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
     })))
+    setAccountPayments((paymentRows ?? []) as unknown as AccountPayment[])
     setLoading(false)
   }, [supabase, day])
 
@@ -173,7 +192,7 @@ export default function VentasPage() {
                     {open ? <ChevronDown size={16} className="text-warm-gray" /> : <ChevronRight size={16} className="text-warm-gray" />}
                     <div>
                       <div className="font-body text-sm font-semibold text-charcoal">{fmtTime(s.sold_at)} hs</div>
-                      <div className="font-body text-xs text-warm-gray">{s.items.length} ítem(s) · {s.payment_method ?? '—'}</div>
+                      <div className="font-body text-xs text-warm-gray flex gap-1.5 items-center">{s.items.length} ítem(s) · {s.payment_method ?? '—'} {s.sale_channel === 'mayorista' && <span className="px-1.5 py-0.5 rounded bg-burgundy/10 text-burgundy font-semibold">Mayorista{s.wholesale_customer?.business_name ? ` · ${s.wholesale_customer.business_name}` : ''}</span>}</div>
                     </div>
                   </div>
                   <span className="font-num text-base font-bold text-burgundy">{fmt(Number(s.total))}</span>
@@ -191,6 +210,34 @@ export default function VentasPage() {
               </div>
             )
           })}
+        </div>
+      )}
+
+      <h3 className="font-sans font-bold text-charcoal mt-7 mb-3 flex items-center gap-2">
+        <CircleDollarSign size={18} /> Cobros de cuentas mayoristas ({accountPayments.length})
+      </h3>
+      <p className="font-body text-xs text-warm-gray mb-3">
+        Se muestran como movimientos de cobro, sin sumarlos otra vez al total vendido.
+      </p>
+      {loading ? null : accountPayments.length === 0 ? (
+        <div className="text-center py-8 bg-white rounded-2xl border border-border font-body text-warm-gray text-sm">
+          No hubo cancelaciones de saldo este día.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {accountPayments.map(payment => (
+            <div key={payment.id} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-white px-4 py-3 shadow-sm">
+              <div>
+                <div className="font-body text-sm font-semibold text-charcoal">
+                  {payment.customer?.business_name ?? 'Cliente mayorista'}
+                </div>
+                <div className="font-body text-xs text-warm-gray">
+                  {fmtTime(payment.received_at)} hs · Cobro de cuenta · {payment.payment_method}
+                </div>
+              </div>
+              <span className="font-num text-base font-bold text-green-700">{fmt(Number(payment.amount))}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { readJsonSetting, writeJsonSetting } from '@/lib/json-settings'
 import { Calendar, Save, Settings2 } from 'lucide-react'
@@ -23,6 +23,10 @@ const CASH_SETTINGS_KEY = 'cash_settings_v1'
 interface Row extends Session {
   totalSales: number
   cashSales: number
+  transferSales: number
+  accountSales: number
+  cashAccountPayments: number
+  transferAccountPayments: number
   ticketCount: number
 }
 
@@ -64,7 +68,7 @@ export default function CajaHistoryPage() {
       })
       const ids = list.map(s => s.id)
 
-      const salesBySession: Record<string, { total: number; cash: number; count: number }> = {}
+      const salesBySession: Record<string, { total: number; cash: number; transfer: number; account: number; cashPayments: number; transferPayments: number; count: number }> = {}
       if (ids.length > 0) {
         const { data: sales } = await supabase
           .from('sales')
@@ -72,10 +76,20 @@ export default function CajaHistoryPage() {
           .in('cash_session_id', ids)
         for (const s of sales ?? []) {
           const key = s.cash_session_id as string
-          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, count: 0 }
+          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, cashPayments: 0, transferPayments: 0, count: 0 }
           salesBySession[key].total += Number(s.total)
           salesBySession[key].count += 1
           if (s.payment_method === 'Efectivo') salesBySession[key].cash += Number(s.total)
+          if (s.payment_method === 'Transferencia') salesBySession[key].transfer += Number(s.total)
+          if (s.payment_method === 'Cuenta corriente') salesBySession[key].account += Number(s.total)
+        }
+        const { data: payments } = await supabase.from('wholesale_account_payments').select('cash_session_id, amount, payment_method').in('cash_session_id', ids)
+        for (const payment of payments ?? []) {
+          const key = payment.cash_session_id as string
+          if (!key) continue
+          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, cashPayments: 0, transferPayments: 0, count: 0 }
+          if (payment.payment_method === 'Efectivo') salesBySession[key].cashPayments += Number(payment.amount)
+          else salesBySession[key].transferPayments += Number(payment.amount)
         }
       }
 
@@ -83,6 +97,10 @@ export default function CajaHistoryPage() {
         ...s,
         totalSales: salesBySession[s.id]?.total ?? 0,
         cashSales: salesBySession[s.id]?.cash ?? 0,
+        transferSales: salesBySession[s.id]?.transfer ?? 0,
+        accountSales: salesBySession[s.id]?.account ?? 0,
+        cashAccountPayments: salesBySession[s.id]?.cashPayments ?? 0,
+        transferAccountPayments: salesBySession[s.id]?.transferPayments ?? 0,
         ticketCount: salesBySession[s.id]?.count ?? 0,
       })))
       setLoading(false)
@@ -160,10 +178,10 @@ export default function CajaHistoryPage() {
             </thead>
             <tbody>
               {rows.map(r => {
-                const expectedCash = r.opening_float + r.cashSales
+                const expectedCash = r.opening_float + r.cashSales + r.cashAccountPayments
                 const diff = r.counted_cash !== null ? r.counted_cash - expectedCash : null
                 return (
-                  <tr key={r.id} className="border-b border-border/50 hover:bg-cream/40 transition-colors">
+                  <Fragment key={r.id}><tr className="border-b border-border/50 hover:bg-cream/40 transition-colors">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 font-body text-sm font-semibold text-charcoal">
                         <Calendar size={14} className="text-warm-gray" /> {fmtDate(r.closed_at)}
@@ -188,6 +206,10 @@ export default function CajaHistoryPage() {
                       )}
                     </td>
                   </tr>
+                  <tr className="border-b border-border/30 bg-cream/30 text-xs">
+                    <td colSpan={2} className="px-4 py-2 text-warm-gray">Efectivo ventas {fmt(r.cashSales)} · Transferencias {fmt(r.transferSales)} · Cuenta corriente {fmt(r.accountSales)}</td>
+                    <td colSpan={3} className="px-4 py-2 text-right text-warm-gray">Cobros de saldo: efectivo {fmt(r.cashAccountPayments)} · transferencia {fmt(r.transferAccountPayments)}</td>
+                  </tr></Fragment>
                 )
               })}
             </tbody>

@@ -23,6 +23,7 @@ interface Product {
   image_url: string | null
   featured: boolean
   active: boolean
+  show_on_pos: boolean
   sort_order: number
 }
 
@@ -47,6 +48,7 @@ const emptyProduct: ProductForm = {
   image_url: '',
   featured: false,
   active: true,
+  show_on_pos: true,
   sort_order: 0,
 }
 
@@ -96,7 +98,7 @@ export default function AdminProductsPage() {
 
   const fetchProducts = async () => {
     const [prodRes, catRes] = await Promise.all([
-      supabase.from('products').select('*').order('sort_order'),
+      supabase.from('products').select('*').order('name'),
       supabase.from('site_content').select('value').eq('key', 'product_categories').single()
     ])
     setProducts(prodRes.data ?? [])
@@ -170,6 +172,7 @@ export default function AdminProductsPage() {
     const { id, ...rest } = p
     setForm({
       ...rest,
+      show_on_pos: p.show_on_pos ?? true,
       manual_price: p.manual_price ?? false,
       sale_options: Array.isArray(p.sale_options) && p.sale_options.length > 0
         ? p.sale_options
@@ -192,9 +195,15 @@ export default function AdminProductsPage() {
   }
 
   const handleSave = async () => {
+    const name = form.name.trim()
+    if (name.length < 2) {
+      setActionMessage('Ingresá un nombre de producto de al menos 2 caracteres.')
+      return
+    }
     setSaving(true)
     const payload = {
       ...form,
+      name,
       price: form.price === null ? null : roundUpTo100(Number(form.price)),
       sale_options: form.unit === 'kg'
         ? []
@@ -208,14 +217,18 @@ export default function AdminProductsPage() {
             }))
             .filter((option) => option.label && Number.isFinite(option.quantity) && option.quantity > 0),
     }
-    if (editingId === 'new') {
-      await supabase.from('products').insert(payload)
-    } else {
-      await supabase.from('products').update(payload).eq('id', editingId)
+    const { error } = editingId === 'new'
+      ? await supabase.from('products').insert(payload)
+      : await supabase.from('products').update(payload).eq('id', editingId)
+    if (error) {
+      setActionMessage(`No se pudo guardar el producto: ${error.message}`)
+      setSaving(false)
+      return
     }
     await fetchProducts()
     setSaving(false)
     closeForm()
+    setActionMessage(editingId === 'new' ? 'Producto creado.' : 'Producto actualizado.')
   }
 
   const openDeleteDialog = async (product: Product) => {
@@ -276,6 +289,12 @@ export default function AdminProductsPage() {
   const toggleFeatured = async (p: Product) => {
     await supabase.from('products').update({ featured: !p.featured }).eq('id', p.id)
     await fetchProducts()
+  }
+
+  const togglePosVisibility = async (p: Product) => {
+    const { error } = await supabase.from('products').update({ show_on_pos: p.show_on_pos === false }).eq('id', p.id)
+    if (error) setActionMessage(`No se pudo actualizar la visibilidad: ${error.message}`)
+    else await fetchProducts()
   }
 
   const displayedProducts = products.filter((product) => {
@@ -455,6 +474,14 @@ export default function AdminProductsPage() {
                     <span className="block font-body text-xs text-warm-gray">La receta puede seguir calculando un sugerido, pero no reemplazará este precio.</span>
                   </span>
                 </label>
+                <label className="sm:col-span-2 flex items-start gap-2 cursor-pointer rounded-xl border border-border bg-cream/40 p-3">
+                  <input type="checkbox" name="show_on_pos" checked={!form.show_on_pos} onChange={(event) => setForm((previous) => ({ ...previous, show_on_pos: !event.target.checked }))}
+                    className="w-4 h-4 mt-0.5 accent-burgundy" />
+                  <span>
+                    <span className="block font-body text-sm font-semibold text-charcoal">NO mostrar en mostrador</span>
+                    <span className="block font-body text-xs text-warm-gray">No estará disponible para vender ni en minorista ni en mayorista. Seguirá activo para recetas, stock e historial.</span>
+                  </span>
+                </label>
                 {form.unit !== 'kg' && (
                   <div className="sm:col-span-2 rounded-xl border border-border p-4">
                     <div className="flex items-center justify-between gap-3 mb-3">
@@ -584,8 +611,16 @@ export default function AdminProductsPage() {
                   <td className="px-4 py-3 text-center">
                     {!p.active ? (
                       <span className="inline-flex px-2 py-1 rounded-full bg-red-50 text-red-700 font-body text-xs font-semibold">Baja</span>
+                    ) : p.show_on_pos === false ? (
+                      <span className="inline-flex px-2 py-1 rounded-full bg-amber-50 text-amber-800 font-body text-xs font-semibold">Oculto en mostrador</span>
                     ) : (
                       <span className="inline-flex px-2 py-1 rounded-full bg-green-50 text-green-700 font-body text-xs font-semibold">Vigente</span>
+                    )}
+                    {p.active && (
+                      <label className="mt-1.5 flex justify-center items-center gap-1.5 cursor-pointer font-body text-[11px] text-warm-gray">
+                        <input type="checkbox" checked={p.show_on_pos !== false} onChange={() => void togglePosVisibility(p)} className="w-3.5 h-3.5 accent-burgundy" />
+                        Mostrar en mostrador
+                      </label>
                     )}
                   </td>
                   <td className="px-4 py-3">

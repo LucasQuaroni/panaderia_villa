@@ -39,6 +39,7 @@ interface Product {
   category: string | null
   featured?: boolean
   active?: boolean
+  show_on_pos?: boolean
   sale_options?: SaleOption[] | null
 }
 
@@ -91,7 +92,10 @@ export default function PosPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [letter, setLetter] = useState<string | null>(null)
-  const [cart, setCart] = useState<CartItem[]>([])
+  // Dos pedidos independientes. Sólo el carrito elegido recibe productos y se cobra.
+  const [carts, setCarts] = useState<[CartItem[], CartItem[]]>([[], []])
+  const [activeCartIndex, setActiveCartIndex] = useState<0 | 1>(0)
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>({})
   const [session, setSession] = useState<CashSession | null>(null)
   const [openingFloat, setOpeningFloat] = useState(3000)
   const [closingReserve, setClosingReserve] = useState(3000)
@@ -110,11 +114,21 @@ export default function PosPage() {
   const [openCajaModal, setOpenCajaModal] = useState(false)
   const [closeCajaModal, setCloseCajaModal] = useState(false)
   const [flash, setFlash] = useState('')
+  const [cashError, setCashError] = useState('')
+  const [openingCash, setOpeningCash] = useState(false)
   const [lastSale, setLastSale] = useState<
     { client_uuid: string; total: number; grossTotal: number; method: string; change: number | null } | null
   >(null)
 
   const searchRef = useRef<HTMLInputElement>(null)
+
+  const cart = carts[activeCartIndex]
+  const setCart = useCallback((updater: CartItem[] | ((current: CartItem[]) => CartItem[])) => {
+    setCarts(previous => {
+      const next = typeof updater === 'function' ? updater(previous[activeCartIndex]) : updater
+      return activeCartIndex === 0 ? [next, previous[1]] : [previous[0], next]
+    })
+  }, [activeCartIndex])
 
   const anyModalOpen = Boolean(weighing) || Boolean(unitSelecting) || payOpen || changePaymentOpen || freeOpen || openCajaModal || closeCajaModal
 
@@ -134,7 +148,7 @@ export default function PosPage() {
         setUserId(user?.id ?? null)
 
         const [{ data: prods, error: prodErr }, { data: sessions }, settings] = await Promise.all([
-          supabase.from('products').select('id, name, price, unit, category, featured, active, sale_options').eq('active', true).order('name'),
+          supabase.from('products').select('id, name, price, unit, category, featured, active, show_on_pos, sale_options').eq('active', true).eq('show_on_pos', true).order('name'),
           supabase.from('cash_sessions').select('id, opening_float, opened_at').eq('status', 'open').order('opened_at', { ascending: false }).limit(1),
           readJsonSetting(supabase, CASH_SETTINGS_KEY, { cash_opening_float: 3000, cash_closing_reserve: 3000 }),
         ])
@@ -165,6 +179,32 @@ export default function PosPage() {
     }
     init()
   }, [supabase, refreshPending, trySync])
+
+  // Admin y cajero trabajan sobre la misma caja física. Refrescamos al volver
+  // a esta pantalla y periódicamente para reflejar aperturas/cierres del otro.
+  useEffect(() => {
+    if (loading || !online) return
+    let disposed = false
+    const refreshSharedSession = async () => {
+      const { data, error } = await supabase
+        .from('cash_sessions').select('id, opening_float, opened_at')
+        .eq('status', 'open').order('opened_at', { ascending: false }).limit(1).maybeSingle()
+      if (disposed || error) return
+      const remote = (data as CashSession | null) ?? null
+      setSession(current => {
+        if (current?.id === remote?.id) return current
+        cacheSession(remote)
+        return remote
+      })
+    }
+    const timer = window.setInterval(refreshSharedSession, 15000)
+    window.addEventListener('focus', refreshSharedSession)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshSharedSession)
+    }
+  }, [loading, online, supabase])
 
   // Estado de conexión
   useEffect(() => {
@@ -283,16 +323,50 @@ export default function PosPage() {
   }
 
   const changeQty = (key: string, delta: number) => {
-    setCart(prev => prev.flatMap(i => {
-      if (i.key !== key) return [i]
-      const q = i.quantity + delta
-      if (q <= 0) return []
-      return [{ ...i, quantity: q, subtotal: roundUpTo100(q * i.unit_price) }]
+    setCart(prev => prev.map(i => {
+      if (i.key !== key) return i
+      const q = Math.max(0, Math.round((i.quantity + delta) * 1000) / 1000)
+      return { ...i, quantity: q, subtotal: roundUpTo100(q * i.unit_price) }
     }))
+    setQuantityDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
   }
 
-  const removeItem = (key: string) => setCart(prev => prev.filter(i => i.key !== key))
-  const clearCart = () => setCart([])
+  // Conserva lo que se está escribiendo ("0" o "0,") y recién convierte
+  // cuando el valor ya representa un número. El renglón sólo se borra con papelera.
+  const editQty = (key: string, raw: string) => {
+    if (!/^\d*(?:[.,]\d*)?$/.test(raw)) return
+    setQuantityDrafts(prev => ({ ...prev, [key]: raw }))
+    if (raw === '' || raw === '0,' || raw === '0.') {
+      if (raw === '') setCart(prev => prev.map(i => i.key === key ? { ...i, quantity: 0, subtotal: 0 } : i))
+      return
+    }
+    const quantity = parseNum(raw)
+    if (!Number.isFinite(quantity) || quantity < 0) return
+    setCart(prev => prev.map(i => i.key === key
+      ? { ...i, quantity, subtotal: roundUpTo100(quantity * i.unit_price) }
+      : i))
+  }
+
+  const commitQty = (key: string) => {
+    const raw = quantityDrafts[key]
+    if (raw === undefined) return
+    const quantity = parseNum(raw)
+    if (Number.isFinite(quantity) && quantity >= 0) {
+      setCart(prev => prev.map(i => i.key === key
+        ? { ...i, quantity, subtotal: roundUpTo100(quantity * i.unit_price) }
+        : i))
+    }
+    setQuantityDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
+  }
+
+  const removeItem = (key: string) => {
+    setCart(prev => prev.filter(i => i.key !== key))
+    setQuantityDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
+  }
+  const clearCart = () => {
+    setCart([])
+    setQuantityDrafts({})
+  }
 
   const total = useMemo(() => cart.reduce((s, i) => s + i.subtotal, 0), [cart])
 
@@ -304,28 +378,64 @@ export default function PosPage() {
 
   // ── Caja ──────────────────────────────────────────────────
   const openCaja = async () => {
-    if (!userId) return
-    const { data } = await supabase
+    if (!userId || openingCash) return
+    setOpeningCash(true)
+    setCashError('')
+    try {
+      // La caja es única: comprobamos otra vez antes de abrirla por si el otro
+      // usuario la abrió mientras este modal estaba en pantalla.
+      const { data: existing, error: lookupError } = await supabase
+        .from('cash_sessions').select('id, opening_float, opened_at')
+        .eq('status', 'open').order('opened_at', { ascending: false }).limit(1).maybeSingle()
+      if (lookupError) throw lookupError
+      if (existing) {
+        setSession(existing as CashSession)
+        cacheSession(existing as CashSession)
+        setOpenCajaModal(false)
+        showFlash('La caja ya fue abierta por otro usuario.')
+        focusSearch()
+        return
+      }
+      const { data, error } = await supabase
       .from('cash_sessions')
       .insert({ opened_by: userId, opening_float: openingFloat, status: 'open' })
       .select('id, opening_float, opened_at')
       .single()
-    if (data) {
+      if (error) throw error
+      if (!data) throw new Error('No se pudo crear la sesión de caja.')
       setSession(data as CashSession)
       cacheSession(data as CashSession)
+      setOpenCajaModal(false)
+      focusSearch()
+    } catch (error) {
+      // Si ambos usuarios confirmaron al mismo tiempo, el índice único deja
+      // ganar a uno. El otro adopta inmediatamente esa misma caja.
+      const { data: sharedSession } = await supabase
+        .from('cash_sessions').select('id, opening_float, opened_at')
+        .eq('status', 'open').order('opened_at', { ascending: false }).limit(1).maybeSingle()
+      if (sharedSession) {
+        setSession(sharedSession as CashSession)
+        cacheSession(sharedSession as CashSession)
+        setOpenCajaModal(false)
+        showFlash('La caja ya fue abierta por otro usuario.')
+        focusSearch()
+      } else {
+        setCashError(error instanceof Error ? error.message : 'No se pudo abrir la caja. Reintentá.')
+      }
+    } finally {
+      setOpeningCash(false)
     }
-    setOpenCajaModal(false)
-    focusSearch()
   }
 
   // ── Cobrar ────────────────────────────────────────────────
   const charge = async (method: string, change: number | null) => {
-    if (cart.length === 0 || !session) return
+    const chargeableItems = cart.filter(i => Number.isFinite(i.quantity) && i.quantity > 0)
+    if (chargeableItems.length === 0 || !session) return
     const sale: PendingSale = {
       client_uuid: crypto.randomUUID(),
       cash_session_id: session.id,
       payment_method: method,
-      items: cart.map(i => ({
+      items: chargeableItems.map(i => ({
         product_id: i.product_id,
         description: i.name,
         unit: i.unit,
@@ -558,60 +668,96 @@ export default function PosPage() {
 
           </div>
 
-          {/* Carrito */}
-          <div className="bg-white rounded-2xl border border-border shadow-sm flex flex-col h-fit lg:sticky lg:top-28">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <span className="flex items-center gap-2 font-sans font-bold text-charcoal">
-                <ShoppingCart size={18} /> Carrito
-                {cart.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-full bg-cream-dark font-body text-xs text-warm-gray">{cart.length}</span>
-                )}
-              </span>
-              {cart.length > 0 && (
-                <button onClick={clearCart} className="font-body text-xs text-warm-gray hover:text-red-500 transition-colors">
-                  Vaciar
-                </button>
-              )}
-            </div>
+          {/* Dos carritos completos: se apilan y el activo queda visualmente destacado. */}
+          <div className="flex flex-col gap-4 h-fit lg:sticky lg:top-28">
+            {([0, 1] as const).map(index => {
+              const panelCart = carts[index]
+              const panelTotal = panelCart.reduce((sum, item) => sum + item.subtotal, 0)
+              const isActive = activeCartIndex === index
 
-            <div className="flex-1 overflow-y-auto max-h-[46vh] divide-y divide-border/60">
-              {cart.length === 0 ? (
-                <div className="text-center py-12 text-warm-gray font-body text-sm px-4">
-                  Buscá o tocá un producto para agregarlo.
-                </div>
-              ) : cart.map(i => (
-                <div key={i.key} className="flex items-center gap-2 px-4 py-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-body text-sm font-semibold text-charcoal truncate">{i.name}</div>
-                    <div className="font-num text-xs text-warm-gray">
-                      {i.unit === 'kg' ? `${fmtKg(i.quantity)} × ${fmtARS(i.unit_price)}/kg` : `${i.quantity} ${i.unit} × ${fmtARS(i.unit_price)}`}
+              return (
+                <section
+                  key={index}
+                  onClick={() => {
+                    if (!isActive) {
+                      setActiveCartIndex(index)
+                      setQuantityDrafts({})
+                    }
+                  }}
+                  aria-label={`Carrito ${index + 1}${isActive ? ', seleccionado' : ', inactivo'}`}
+                  className={`rounded-2xl border flex flex-col h-[300px] overflow-hidden transition-all duration-200 ${
+                    isActive
+                      ? 'bg-white border-burgundy shadow-lg ring-2 ring-burgundy/15'
+                      : 'bg-stone-200/80 border-stone-300 opacity-70 cursor-pointer hover:opacity-90'
+                  }`}
+                >
+                  <div className={`flex items-center justify-between px-4 py-3 border-b ${isActive ? 'bg-burgundy text-cream border-burgundy' : 'bg-stone-300 text-stone-600 border-stone-400'}`}>
+                    <div className="flex items-center gap-2 font-body text-sm font-bold">
+                      <ShoppingCart size={17} />
+                      Carrito {index + 1}
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] ${isActive ? 'bg-cream/20 text-cream' : 'bg-stone-400/60 text-stone-700'}`}>
+                        {panelCart.length}
+                      </span>
+                      {isActive && <span className="text-[10px] uppercase tracking-wide text-cream/80">Seleccionado</span>}
                     </div>
+                    {isActive && panelCart.length > 0 && (
+                      <button onClick={clearCart} className="font-body text-xs text-cream/80 hover:text-white transition-colors">
+                        Vaciar
+                      </button>
+                    )}
                   </div>
-                  {i.unit !== 'kg' && (
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => changeQty(i.key, -1)} className="p-1 rounded-md border border-border text-warm-gray hover:text-charcoal"><Minus size={13} /></button>
-                      <button onClick={() => changeQty(i.key, 1)} className="p-1 rounded-md border border-border text-warm-gray hover:text-charcoal"><Plus size={13} /></button>
-                    </div>
-                  )}
-                  <div className="w-20 text-right font-num text-sm font-bold text-charcoal">{fmtARS(i.subtotal)}</div>
-                  <button onClick={() => removeItem(i.key)} className="p-1 text-warm-gray hover:text-red-500"><Trash2 size={14} /></button>
-                </div>
-              ))}
-            </div>
 
-            <div className="border-t border-border p-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className="font-body text-sm text-warm-gray">Total</span>
-                <span className="font-num text-3xl font-bold text-burgundy">{fmtARS(total)}</span>
-              </div>
-              <button
-                onClick={() => setPayOpen(true)}
-                disabled={cart.length === 0}
-                className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors"
-              >
-                <CircleDollarSign size={20} /> Cobrar
-              </button>
-            </div>
+                  <div className={`flex-1 overflow-y-auto max-h-[34vh] divide-y ${isActive ? 'divide-border/60' : 'divide-stone-300 pointer-events-none select-none'}`}>
+                    {panelCart.length === 0 ? (
+                      <div className={`text-center py-9 font-body text-sm px-4 ${isActive ? 'text-warm-gray' : 'text-stone-500'}`}>
+                        {isActive ? 'Buscá o tocá un producto para agregarlo.' : `Tocá este recuadro para usar el carrito ${index + 1}.`}
+                      </div>
+                    ) : panelCart.map(item => (
+                      <div key={item.key} className="flex items-center gap-2 px-4 py-3">
+                        <div className="flex-1 min-w-0">
+                          <div className={`font-body text-sm font-semibold truncate ${isActive ? 'text-charcoal' : 'text-stone-600'}`}>{item.name}</div>
+                          <div className={`font-num text-xs ${isActive ? 'text-warm-gray' : 'text-stone-500'}`}>
+                            {item.unit === 'kg' ? `${fmtKg(item.quantity)} × ${fmtARS(item.unit_price)}/kg` : `${item.quantity} ${item.unit} × ${fmtARS(item.unit_price)}`}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => changeQty(item.key, item.unit === 'kg' ? -0.1 : -1)} className="p-1 rounded-md border border-border text-warm-gray hover:text-charcoal" aria-label="Restar cantidad"><Minus size={13} /></button>
+                          <input
+                            type="text" inputMode="decimal" value={quantityDrafts[item.key] ?? String(item.quantity).replace('.', ',')}
+                            onChange={event => editQty(item.key, event.target.value)} onBlur={() => commitQty(item.key)}
+                            aria-label={`Cantidad de ${item.name}`}
+                            className="w-14 px-1 py-1 rounded-md border border-border text-center font-num text-sm focus:outline-none focus:border-burgundy"
+                          />
+                          <button onClick={() => changeQty(item.key, item.unit === 'kg' ? 0.1 : 1)} className="p-1 rounded-md border border-border text-warm-gray hover:text-charcoal" aria-label="Sumar cantidad"><Plus size={13} /></button>
+                        </div>
+                        <div className={`w-20 text-right font-num text-sm font-bold ${isActive ? 'text-charcoal' : 'text-stone-600'}`}>{fmtARS(item.subtotal)}</div>
+                        <button onClick={() => removeItem(item.key)} className="p-1 text-warm-gray hover:text-red-500"><Trash2 size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className={`border-t p-4 ${isActive ? 'border-border bg-white' : 'border-stone-300 bg-stone-200/70'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className={`font-body text-sm ${isActive ? 'text-warm-gray' : 'text-stone-500'}`}>Total</span>
+                      <span className={`font-num text-2xl font-bold ${isActive ? 'text-burgundy' : 'text-stone-600'}`}>{fmtARS(panelTotal)}</span>
+                    </div>
+                    {isActive ? (
+                      <button
+                        onClick={() => setPayOpen(true)}
+                        disabled={!panelCart.some(item => Number.isFinite(item.quantity) && item.quantity > 0)}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors"
+                      >
+                        <CircleDollarSign size={20} /> Cobrar
+                      </button>
+                    ) : (
+                      <div className="w-full px-4 py-3 rounded-xl bg-stone-300 text-stone-600 text-center font-body text-sm font-bold">
+                        Seleccionar carrito {index + 1}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )
+            })}
           </div>
         </div>
       )}
@@ -671,6 +817,9 @@ export default function PosPage() {
               <button onClick={() => setOpenCajaModal(false)} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
             </div>
             <div className="p-5 flex flex-col gap-4">
+              {cashError && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 font-body text-sm text-red-700">{cashError}</div>
+              )}
               <div className="flex flex-col gap-1">
                 <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Fondo inicial fijo</label>
                 <div className="px-4 py-4 rounded-xl bg-cream-dark font-num text-3xl font-bold text-burgundy text-center">
@@ -678,10 +827,11 @@ export default function PosPage() {
                 </div>
                 <p className="font-body text-xs text-warm-gray text-center">El monto lo configura Administración.</p>
               </div>
-              <button onClick={openCaja}
-                className="w-full px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark transition-colors">
-                Abrir caja
+              <button onClick={openCaja} disabled={openingCash || !online}
+                className="w-full px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark disabled:opacity-50 transition-colors">
+                {openingCash ? 'Abriendo...' : 'Abrir caja'}
               </button>
+              {!online && <p className="font-body text-xs text-amber-700 text-center">Para evitar aperturas duplicadas, conectate para abrir la caja.</p>}
             </div>
           </div>
         </div>
@@ -1190,24 +1340,32 @@ function CloseCajaModal({
 }) {
   const [loading, setLoading] = useState(true)
   const [byMethod, setByMethod] = useState<Record<string, number>>({})
+  const [accountPaymentsByMethod, setAccountPaymentsByMethod] = useState<Record<string, number>>({})
   const [count, setCount] = useState(0)
   const [ticketAvg, setTicketAvg] = useState(0)
   const [topProduct, setTopProduct] = useState<string>('')
   const [counted, setCounted] = useState('')
   const [shift, setShift] = useState<'mediodia' | 'noche'>(() => new Date().getHours() < 17 ? 'mediodia' : 'noche')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     const load = async () => {
       await syncFirst() // subir pendientes antes de calcular
-      const [{ data: salesData }, { data: itemsData }] = await Promise.all([
+      const [{ data: salesData }, { data: itemsData }, { data: accountPaymentsData }] = await Promise.all([
         supabase.from('sales').select('id, total, payment_method').eq('cash_session_id', session.id),
         supabase.from('sale_items').select('description, quantity, stock_quantity, sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
+        supabase.from('wholesale_account_payments').select('amount, payment_method').eq('cash_session_id', session.id),
       ])
       const rows = salesData ?? []
       const map: Record<string, number> = {}
       for (const r of rows) map[r.payment_method ?? '—'] = (map[r.payment_method ?? '—'] ?? 0) + Number(r.total)
       setByMethod(map)
+      const paymentMap: Record<string, number> = {}
+      for (const payment of accountPaymentsData ?? []) {
+        paymentMap[payment.payment_method] = (paymentMap[payment.payment_method] ?? 0) + Number(payment.amount)
+      }
+      setAccountPaymentsByMethod(paymentMap)
       setCount(rows.length)
       const sum = rows.reduce((s, r) => s + Number(r.total), 0)
       setTicketAvg(rows.length ? sum / rows.length : 0)
@@ -1228,7 +1386,8 @@ function CloseCajaModal({
 
   const totalSales = Object.values(byMethod).reduce((s, n) => s + n, 0)
   const cashSales = byMethod['Efectivo'] ?? 0
-  const expectedCash = session.opening_float + cashSales
+  const cashAccountPayments = accountPaymentsByMethod['Efectivo'] ?? 0
+  const expectedCash = session.opening_float + cashSales + cashAccountPayments
   const countedNum = parseNum(counted) || 0
   const diff = counted !== '' ? countedNum - expectedCash : 0
   const cashForWithdrawal = counted !== '' ? countedNum : expectedCash
@@ -1237,13 +1396,24 @@ function CloseCajaModal({
 
   const doClose = async () => {
     setSaving(true)
-    await supabase.from('cash_sessions').update({
+    setError('')
+    const { data, error: closeError } = await supabase.from('cash_sessions').update({
       status: 'closed',
       closed_at: new Date().toISOString(),
       closed_by: userId,
       counted_cash: counted !== '' ? countedNum : expectedCash,
       notes: JSON.stringify({ closing_shift: shift, cash_left: closingReserve, cash_withdrawn: cashWithdrawn }),
-    }).eq('id', session.id)
+    }).eq('id', session.id).eq('status', 'open').select('id').maybeSingle()
+    if (closeError) {
+      setError(closeError.message)
+      setSaving(false)
+      return
+    }
+    if (!data) {
+      setError('La caja ya fue cerrada desde otro usuario. Actualizá la pantalla.')
+      setSaving(false)
+      return
+    }
     onClosed()
   }
 
@@ -1258,6 +1428,7 @@ function CloseCajaModal({
           <div className="p-8 text-center text-warm-gray font-body">Calculando...</div>
         ) : (
           <div className="p-5 flex flex-col gap-4">
+            {error && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 font-body text-sm text-red-700">No se pudo cerrar la caja: {error}</div>}
             <div className="flex flex-col gap-1">
               <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Turno que cierra</label>
               <div className="grid grid-cols-2 gap-2">
@@ -1301,12 +1472,27 @@ function CloseCajaModal({
               </div>
             </div>
 
+            {Object.keys(accountPaymentsByMethod).length > 0 && (
+              <div className="border border-border rounded-xl divide-y divide-border/60">
+                <div className="px-4 py-2.5 bg-cream/50 font-body text-sm font-bold text-charcoal">Cobros de cuenta mayorista</div>
+                {Object.entries(accountPaymentsByMethod).map(([method, amount]) => (
+                  <div key={method} className="flex items-center justify-between px-4 py-2.5">
+                    <span className="font-body text-sm text-charcoal">{method}</span>
+                    <span className="font-num text-sm font-semibold text-charcoal">{fmt(amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="bg-cream-dark rounded-xl p-4 flex flex-col gap-2">
               <div className="flex justify-between font-body text-sm text-warm-gray">
                 <span>Fondo inicial</span><span className="font-num">{fmt(session.opening_float)}</span>
               </div>
               <div className="flex justify-between font-body text-sm text-warm-gray">
                 <span>+ Ventas en efectivo</span><span className="font-num">{fmt(cashSales)}</span>
+              </div>
+              <div className="flex justify-between font-body text-sm text-warm-gray">
+                <span>+ Cobros de cuenta en efectivo</span><span className="font-num">{fmt(cashAccountPayments)}</span>
               </div>
               <div className="flex justify-between font-body text-sm font-semibold text-charcoal border-t border-border pt-2">
                 <span>Efectivo esperado</span><span className="font-num">{fmt(expectedCash)}</span>

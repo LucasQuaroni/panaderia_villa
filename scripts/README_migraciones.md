@@ -12,10 +12,17 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
    stock bajo, ajustes/mermas y vistas de stock actual. Requiere la `002` y la `004`.
 5. **`006_precios_presentaciones_consumo.sql`** — precios manuales, redondeo a
    $100, presentaciones configurables y consumo interno. Requiere la `004`.
+6. **`007_mayoristas_caja_compartida.sql`** — migra clientes y cobros
+   mayoristas desde la configuración anterior a tablas reales, identifica las
+   ventas mayoristas y deja una sola caja física compartida para administrador
+   y cajero. Requiere la `006`.
+7. **`008_visibilidad_mostrador.sql`** — agrega la visibilidad de productos en
+   mostrador. Ejecutarla después de la `007`.
 
-La baja lógica, el fondo de caja, los clientes mayoristas, los márgenes y el
-stock base diario usan las tablas existentes y se gestionan automáticamente
-desde la aplicación.
+La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
+existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.
+El stock ya no tiene reposición ni base diaria automática: se corrige únicamente
+mediante existencia final y movimientos manuales.
 
 ### Cómo correr cada archivo
 
@@ -115,7 +122,8 @@ Después de correr `004`:
 2. Asignarte admin y crear el usuario cajero.
 3. Definir `NEXT_PUBLIC_SITE_URL` y desplegar (HTTPS).
 4. Cargar materias primas para costos, recetas (con kg/unidad) y productos con precio.
-5. Configurar el stock base diario y registrar cuánto de cada producción queda
-   realmente disponible para vender. Las materias primas no llevan existencias.
+5. Imprimir la hoja diaria de producción y, al recibirla completa, actualizar
+   manualmente las existencias finales desde Stock. Las ventas descuentan el
+   peso o las unidades vendidas.
 6. Abrir la app en Chrome, "Instalar", conectar la balanza y abrir caja.
 7. ¡A vender!

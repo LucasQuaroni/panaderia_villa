@@ -4,279 +4,126 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { readJsonSetting, writeJsonSetting } from '@/lib/json-settings'
 import { roundUpTo100 } from '@/lib/money'
-import { Banknote, Building2, CheckCircle2, Minus, Plus, Printer, Save, ShoppingCart, Trash2, Users, X } from 'lucide-react'
+import { useScale, EMPTY_KG } from '@/hooks/use-scale'
+import { AlertTriangle, Cable, CheckCircle2, Minus, Plus, Printer, Save, Scale, Search, ShoppingCart, Trash2, Users, X } from 'lucide-react'
 
-interface Customer {
-  id: string
-  business_name: string
-  contact_name: string
-  tax_id: string
-  phone: string
-  address: string
-  has_current_account: boolean
-  active: boolean
+interface Customer { id:string; business_name:string; contact_name:string; tax_id:string; phone:string; address:string; has_current_account:boolean; active:boolean }
+interface Product { id:string; name:string; unit:string; price:number|null; active:boolean; show_on_pos?:boolean }
+interface CartItem { product:Product; quantity:number; unitPrice:number; draft:string }
+interface RecipeItem { quantity:number; raw_material?:{ unit_price:number } }
+interface Recipe { product_id:string; yield_qty:number; items:RecipeItem[] }
+interface PriceSetting { markup_pct:number|null; price:number }
+type Method='Efectivo'|'Transferencia'|'Cuenta corriente'; type Cart={items:CartItem[];customerId:string;paymentMethod:Method}; type Tab='sale'|'customers'|'prices'; type Role='admin'|'cashier'|null
+const blank=():Cart=>({items:[],customerId:'',paymentMethod:'Efectivo'}); const PRICES_KEY='wholesale_prices_v1'
+const fmt=(v:number)=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:2}).format(v)
+const cls='w-full px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white'; const parse=(s:string)=>Number(s.replace(',','.')); const line=(x:CartItem)=>roundUpTo100(x.quantity*x.unitPrice)
+
+export default function WholesalePage(){
+ const supabase=createClient(),scale=useScale(); const [role,setRole]=useState<Role>(null),[tab,setTab]=useState<Tab>('sale'),[customers,setCustomers]=useState<Customer[]>([]),[products,setProducts]=useState<Product[]>([]),[recipes,setRecipes]=useState<Recipe[]>([]),[prices,setPrices]=useState<Record<string,PriceSetting>>({}),[accountSales,setAccountSales]=useState<Record<string,number>>({}),[accountPayments,setAccountPayments]=useState<Record<string,number>>({}),[sessionId,setSessionId]=useState<string|null>(null),[carts,setCarts]=useState<[Cart,Cart]>([blank(),blank()]),[active,setActive]=useState<0|1>(0),[search,setSearch]=useState(''),[letter,setLetter]=useState<string|null>(null),[customerSearch,setCustomerSearch]=useState(''),[weighing,setWeighing]=useState<Product|null>(null),[modal,setModal]=useState<Customer|'new'|null>(null),[paymentCustomer,setPaymentCustomer]=useState<Customer|null>(null),[message,setMessage]=useState(''),[error,setError]=useState(''),[saving,setSaving]=useState(false),[loading,setLoading]=useState(true),[markupDrafts,setMarkupDrafts]=useState<Record<string,string>>({}),[priceDrafts,setPriceDrafts]=useState<Record<string,string>>({}),[lastTransfer,setLastTransfer]=useState<{id:string;customer:string;total:number;items:CartItem[]}|null>(null)
+ const load=useCallback(async()=>{
+  setLoading(true);setError('')
+  const {data:{user}}=await supabase.auth.getUser()
+  const {data:roleRow}=user?await supabase.from('user_roles').select('role').eq('user_id',user.id).maybeSingle():{data:null}
+  const nextRole=(roleRow?.role as Role)??null
+  const [customersResult,productsResult,openResult,storedPrices]=await Promise.all([
+   supabase.from('wholesale_customers').select('*').order('business_name'),
+   supabase.from('products').select('id,name,unit,price,active,show_on_pos').eq('active',true).order('name'),
+   supabase.from('cash_sessions').select('id').eq('status','open').order('opened_at',{ascending:false}).limit(1).maybeSingle(),
+   readJsonSetting<Record<string,PriceSetting>>(supabase,PRICES_KEY,{}),
+  ])
+  const nextProducts=((productsResult.data??[])as Product[]).map(product=>({...product,price:product.price==null?null:Number(product.price)}))
+  if(customersResult.error||productsResult.error) setError(customersResult.error?.message??productsResult.error?.message??'No se pudo cargar el mostrador.')
+  setRole(nextRole);setCustomers((customersResult.data??[])as Customer[]);setProducts(nextProducts);setPrices(storedPrices);setSessionId(openResult.data?.id??null)
+  setMarkupDrafts(Object.fromEntries(nextProducts.map(product=>[product.id,storedPrices[product.id]?.markup_pct==null?'':String(storedPrices[product.id].markup_pct)])))
+  setPriceDrafts(Object.fromEntries(nextProducts.map(product=>[product.id,String(storedPrices[product.id]?.price??product.price??0)])))
+  if(nextRole==='admin'){
+   const [{data:recipeRows},{data:saleRows},{data:paymentRows}]=await Promise.all([
+    supabase.from('recipes').select('product_id,yield_qty,items:recipe_items(quantity,raw_material:raw_materials(unit_price))'),
+    supabase.from('sales').select('wholesale_customer_id,total').eq('sale_channel','mayorista').eq('payment_method','Cuenta corriente'),
+    supabase.from('wholesale_account_payments').select('customer_id,amount'),
+   ])
+   setRecipes((recipeRows??[])as unknown as Recipe[])
+   const salesTotals:Record<string,number>={};for(const sale of saleRows??[]){if(sale.wholesale_customer_id)salesTotals[sale.wholesale_customer_id]=(salesTotals[sale.wholesale_customer_id]??0)+Number(sale.total)}
+   const paymentTotals:Record<string,number>={};for(const payment of paymentRows??[]){paymentTotals[payment.customer_id]=(paymentTotals[payment.customer_id]??0)+Number(payment.amount)}
+   setAccountSales(salesTotals);setAccountPayments(paymentTotals)
+  }else{setRecipes([]);setAccountSales({});setAccountPayments({});setTab('sale')}
+  setLoading(false)
+ },[supabase]); useEffect(()=>{void load()},[load])
+ const cart=carts[active]
+ const selected=customers.find(customer=>customer.id===cart.customerId)
+ const price=useCallback((product:Product)=>roundUpTo100(Number(prices[product.id]?.price??product.price??0)),[prices])
+ const total=cart.items.reduce((sum,item)=>sum+line(item),0)
+ const norm=(value:string)=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+ const listed=useMemo(()=>products.filter(product=>product.show_on_pos!==false&&norm(product.name).includes(norm(search))&&(!letter||norm(product.name).startsWith(norm(letter)))&&price(product)>0),[products,search,letter,price])
+ const letters=useMemo(()=>new Set(products.filter(product=>product.show_on_pos!==false).map(product=>norm(product.name)[0]?.toUpperCase())),[products])
+ const clientList=useMemo(()=>customers.filter(customer=>norm(`${customer.business_name} ${customer.contact_name} ${customer.tax_id} ${customer.phone}`).includes(norm(customerSearch))),[customers,customerSearch])
+ const edit=(fn:(current:Cart)=>Cart)=>setCarts(previous=>previous.map((current,index)=>index===active?fn(current):current)as[Cart,Cart])
+ const costFor=useCallback((productId:string)=>{const recipe=recipes.find(item=>item.product_id===productId);if(!recipe)return null;const totalCost=(recipe.items??[]).reduce((sum,item)=>sum+Number(item.quantity)*Number(item.raw_material?.unit_price??0),0);return Number(recipe.yield_qty)>0?totalCost/Number(recipe.yield_qty):totalCost},[recipes])
+ const draftPrice=(product:Product)=>{const cost=costFor(product.id);if(cost===null)return parse(priceDrafts[product.id]??'')||0;const markup=parse(markupDrafts[product.id]??'0');return roundUpTo100(cost*(1+(Number.isFinite(markup)?markup:0)/100))}
+ const balanceFor=(customerId:string)=>(accountSales[customerId]??0)-(accountPayments[customerId]??0)
+ const add=(product:Product,quantity=1)=>edit(current=>{const existing=current.items.find(item=>item.product.id===product.id);if(existing){const next=Math.round((existing.quantity+quantity)*1000)/1000;return {...current,items:current.items.map(item=>item===existing?{...item,quantity:next,draft:String(next).replace('.',',')}:item)}}return {...current,items:[...current.items,{product,quantity,unitPrice:price(product),draft:quantity.toFixed(product.unit==='kg'?3:0).replace('.',',')}]}})
+ const setDraft=(id:string,draft:string)=>{if(!/^\d*(?:[.,]\d*)?$/.test(draft))return;edit(current=>({...current,items:current.items.map(item=>item.product.id===id?{...item,draft,quantity:Number.isFinite(parse(draft))?parse(draft):item.quantity}:item)}))}
+ const remove=(id:string)=>edit(current=>({...current,items:current.items.filter(item=>item.product.id!==id)}))
+ const register=async()=>{if(!selected||!sessionId||!cart.items.length)return;if(cart.items.some(item=>!Number.isFinite(parse(item.draft))||parse(item.draft)<=0)){setMessage('Revisá las cantidades antes de confirmar.');return}setSaving(true);const soldItems=cart.items.map(item=>({...item}));const {data,error}=await supabase.rpc('register_wholesale_sale',{p_client_uuid:crypto.randomUUID(),p_cash_session_id:sessionId,p_payment_method:cart.paymentMethod,p_customer_id:selected.id,p_items:soldItems.map(item=>({product_id:item.product.id,description:item.product.name,unit:item.product.unit,quantity:item.quantity,stock_quantity:item.quantity,unit_price:item.unitPrice,subtotal:line(item)}))});setSaving(false);if(error){setMessage(`No se pudo registrar: ${error.message}`);return}if(cart.paymentMethod==='Transferencia')setLastTransfer({id:String(data),customer:selected.business_name,total,items:soldItems});else setLastTransfer(null);edit(()=>blank());setMessage(`Venta mayorista registrada (${cart.paymentMethod}).`);await load()}
+ const saveCustomer=async(customer:Customer)=>{const {error}=await supabase.from('wholesale_customers').upsert(customer);if(error)return error.message;setModal(null);await load();return null}
+ const toggle=async(customer:Customer)=>{const action=customer.active?'dar de baja':'reactivar';if(!window.confirm(`¿Confirmás ${action} a ${customer.business_name}? Se conserva todo el historial.`))return;const {error}=await supabase.from('wholesale_customers').update({active:!customer.active}).eq('id',customer.id);setMessage(error?.message??`Cliente ${customer.active?'dado de baja':'reactivado'}.`);if(!error)await load()}
+ const pay=async(customer:Customer,amount:number,method:'Efectivo'|'Transferencia')=>{if(!Number.isFinite(amount)||amount<=0)return 'Ingresá un importe válido.';if(method==='Efectivo'&&!sessionId)return 'Abrí la caja compartida antes de registrar un cobro en efectivo.';const {error}=await supabase.rpc('register_wholesale_payment',{p_customer_id:customer.id,p_cash_session_id:sessionId,p_amount:amount,p_payment_method:method});if(error)return error.message;setPaymentCustomer(null);setMessage(`Cobro de cuenta registrado por ${method}.`);await load();return null}
+ const savePrice=async(product:Product)=>{const cost=costFor(product.id),rawMarkup=markupDrafts[product.id]??'',markup=rawMarkup===''?null:parse(rawMarkup),rawPrice=cost===null?parse(priceDrafts[product.id]??''):cost*(1+(markup??0)/100);if(!Number.isFinite(rawPrice)||rawPrice<0||(markup!==null&&(!Number.isFinite(markup)||markup<0)))return;const savedPrice=roundUpTo100(rawPrice),next={...prices,[product.id]:{markup_pct:cost===null?null:markup,price:savedPrice}};const error=await writeJsonSetting(supabase,PRICES_KEY,next);if(error)setMessage(`No se pudo guardar el precio mayorista: ${error}`);else{setPrices(next);setPriceDrafts(previous=>({...previous,[product.id]:String(savedPrice)}));setMessage('Precio mayorista guardado.')}}
+
+ useEffect(()=>{const refresh=async()=>{const {data}=await supabase.from('cash_sessions').select('id').eq('status','open').order('opened_at',{ascending:false}).limit(1).maybeSingle();setSessionId(data?.id??null)};const timer=window.setInterval(refresh,15000);window.addEventListener('focus',refresh);return()=>{window.clearInterval(timer);window.removeEventListener('focus',refresh)}},[supabase])
+ useEffect(()=>{if(cart.paymentMethod==='Cuenta corriente'&&!selected?.has_current_account){setCarts(previous=>previous.map((current,index)=>index===active?{...current,paymentMethod:'Efectivo'}:current)as[Cart,Cart])}},[active,cart.paymentMethod,selected?.has_current_account])
+ if(loading) return <div className="text-center py-20 font-body text-warm-gray">Cargando mostrador mayorista...</div>
+ if((tab as Tab)==='sale') return <div className="max-w-6xl mx-auto">
+  <div className="mb-6"><h1 className="font-sans text-3xl font-bold text-charcoal">Mostrador mayorista</h1><p className="font-body text-warm-gray mt-1">Dos pedidos simultáneos, clientes y cuenta corriente.</p></div>
+  {role==='admin'&&<div className="flex gap-2 mb-5 bg-white border border-border rounded-xl p-1 w-fit">{([['sale','Nueva venta',ShoppingCart],['customers','Clientes y cuentas',Users],['prices','Precios',Save]]as const).map(([v,l,I])=><button key={v} onClick={()=>setTab(v)} className={`px-4 py-2 rounded-lg text-sm font-semibold flex gap-2 items-center ${tab===v?'bg-burgundy text-cream':'text-warm-gray'}`}><I size={16}/>{l}</button>)}</div>}
+  {error&&<div className="mb-4 px-4 py-3 rounded-xl border bg-red-50 border-red-200 text-red-700 text-sm">{error}</div>}
+  {message&&<div className="mb-4 px-4 py-3 rounded-xl border bg-green-50 border-green-200 text-green-800 text-sm">{message}</div>}
+  <ScaleBar scale={scale}/>
+  <div className="grid lg:grid-cols-[1fr_390px] gap-5 mt-4">
+   <div>
+    <div className="relative mb-3"><Search size={17} className="absolute left-3 top-3 text-warm-gray"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar producto..." className={`${cls} pl-9`}/></div>
+    <div className="flex flex-wrap gap-1 mb-4"><button onClick={()=>setLetter(null)} className={`px-2 h-8 rounded ${!letter?'bg-burgundy text-cream':'bg-white border'}`}>Todos</button>{'ABCDEFGHIJKLMNÑOPQRSTUVWXYZ'.split('').map(l=><button key={l} disabled={!letters.has(l)} onClick={()=>setLetter(letter===l?null:l)} className={`w-8 h-8 rounded ${letter===l?'bg-burgundy text-cream':'bg-white border'} disabled:opacity-30`}>{l}</button>)}</div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">{listed.map(p=><button key={p.id} onClick={()=>p.unit==='kg'?setWeighing(p):add(p)} className="text-left bg-white border border-border rounded-2xl p-4 hover:border-burgundy"><div className="font-semibold text-sm">{p.name}</div><div className="font-num text-burgundy font-bold mt-2">{fmt(price(p))} <span className="text-xs text-warm-gray">/ {p.unit}</span></div></button>)}</div>
+   </div>
+   <div className="flex flex-col gap-4 h-fit lg:sticky lg:top-8">
+    {([0,1] as const).map(index=>{
+     const panelCart=carts[index]
+     const panelCustomer=customers.find(customer=>customer.id===panelCart.customerId)
+     const panelTotal=panelCart.items.reduce((sum,item)=>sum+line(item),0)
+     const isActive=active===index
+     return <section key={index} onClick={()=>{if(!isActive)setActive(index)}} aria-label={`Carrito mayorista ${index+1}${isActive?', seleccionado':', inactivo'}`} className={`rounded-2xl border flex flex-col h-[390px] overflow-hidden transition-all duration-200 ${isActive?'bg-white border-burgundy shadow-lg ring-2 ring-burgundy/15':'bg-stone-200/80 border-stone-300 opacity-70 cursor-pointer hover:opacity-90'}`}>
+      <div className={`flex items-center justify-between px-4 py-3 border-b ${isActive?'bg-burgundy text-cream border-burgundy':'bg-stone-300 text-stone-600 border-stone-400'}`}>
+       <div className="flex items-center gap-2 font-body text-sm font-bold"><ShoppingCart size={17}/>Carrito {index+1}<span className={`px-2 py-0.5 rounded-full text-[10px] ${isActive?'bg-cream/20 text-cream':'bg-stone-400/60 text-stone-700'}`}>{panelCart.items.length}</span>{isActive&&<span className="text-[10px] uppercase tracking-wide text-cream/80">Seleccionado</span>}</div>
+      </div>
+      <div className={`p-3 border-b ${isActive?'border-border':'border-stone-300 pointer-events-none select-none'}`}>
+       <div className="relative"><Search size={15} className="absolute left-3 top-3 text-warm-gray"/><input disabled={!isActive} value={customerSearch} onChange={e=>setCustomerSearch(e.target.value)} placeholder="Cliente, CUIT o teléfono" className={`${cls} pl-8 disabled:bg-stone-100 disabled:text-stone-500`}/></div>
+       <select disabled={!isActive} value={panelCart.customerId} onChange={e=>edit(current=>({...current,customerId:e.target.value}))} className={`${cls} mt-2 disabled:bg-stone-100 disabled:text-stone-500`}><option value="">Seleccionar cliente</option>{clientList.filter(customer=>customer.active).map(customer=><option key={customer.id} value={customer.id}>{customer.business_name}</option>)}</select>
+      </div>
+      <div className={`flex-1 divide-y overflow-y-auto max-h-[32vh] ${isActive?'divide-border':'divide-stone-300 pointer-events-none select-none'}`}>
+       {panelCart.items.length===0?<p className={`p-8 text-center text-sm ${isActive?'text-warm-gray':'text-stone-500'}`}>{isActive?'Elegí productos para este carrito.':`Tocá este recuadro para usar el carrito ${index+1}.`}</p>:panelCart.items.map(item=><div key={item.product.id} className="p-3 flex gap-2 items-center"><div className="flex-1 min-w-0"><div className={`font-semibold text-sm truncate ${isActive?'text-charcoal':'text-stone-600'}`}>{item.product.name}</div><div className={`text-xs ${isActive?'text-warm-gray':'text-stone-500'}`}>{fmt(item.unitPrice)} / {item.product.unit}</div></div><button onClick={()=>setDraft(item.product.id,String(Math.max(0,item.quantity-(item.product.unit==='kg'?.1:1))))} className="p-1 border rounded"><Minus size={13}/></button><input inputMode="decimal" value={item.draft} onChange={e=>setDraft(item.product.id,e.target.value)} className="w-16 p-1 text-center border rounded font-num"/><button onClick={()=>setDraft(item.product.id,String(item.quantity+(item.product.unit==='kg'?.1:1)))} className="p-1 border rounded"><Plus size={13}/></button><button onClick={()=>remove(item.product.id)} className="text-red-500"><Trash2 size={15}/></button></div>)}
+      </div>
+      <div className={`p-4 border-t ${isActive?'border-border bg-white':'border-stone-300 bg-stone-200/70'}`}>
+       <div className="flex justify-between mb-3"><span className={`text-sm ${isActive?'text-warm-gray':'text-stone-500'}`}>Total</span><b className={`font-num text-2xl ${isActive?'text-burgundy':'text-stone-600'}`}>{fmt(panelTotal)}</b></div>
+       {isActive?<><select value={panelCart.paymentMethod} onChange={e=>edit(current=>({...current,paymentMethod:e.target.value as Method}))} className={`${cls} mb-3`}><option>Efectivo</option><option>Transferencia</option>{panelCustomer?.has_current_account&&<option>Cuenta corriente</option>}</select>{!sessionId&&<p className="text-xs text-red-600 mb-2">Abrí la caja compartida para registrar cobros.</p>}<button disabled={saving||!sessionId||!panelCustomer||!panelCart.items.length} onClick={register} className="w-full py-3 rounded-xl bg-burgundy text-cream font-bold disabled:opacity-40">{saving?'Registrando...':'Confirmar venta'}</button></>:<div className="w-full px-4 py-3 rounded-xl bg-stone-300 text-stone-600 text-center font-body text-sm font-bold">Seleccionar carrito {index+1}</div>}
+      </div>
+     </section>
+    })}
+   </div>
+  </div>
+  {weighing&&<Weigh product={weighing} scale={scale} onClose={()=>setWeighing(null)} onAdd={kg=>{add(weighing,kg);setWeighing(null)}}/>}
+  {lastTransfer&&<TransferReceipt receipt={lastTransfer}/>}
+ </div>
+ return <div className="max-w-6xl mx-auto"><div className="mb-6"><h1 className="font-sans text-3xl font-bold text-charcoal">Mostrador mayorista</h1><p className="font-body text-warm-gray mt-1">Dos pedidos simultáneos, clientes y cuenta corriente.</p></div>{role==='admin'&&<div className="flex gap-2 mb-5 bg-white border border-border rounded-xl p-1 w-fit">{([['sale','Nueva venta',ShoppingCart],['customers','Clientes y cuentas',Users],['prices','Precios',Save]]as const).map(([v,l,I])=><button key={v} onClick={()=>setTab(v)} className={`px-4 py-2 rounded-lg text-sm font-semibold flex gap-2 items-center ${tab===v?'bg-burgundy text-cream':'text-warm-gray'}`}><I size={16}/>{l}</button>)}</div>}{error&&<div className="mb-4 px-4 py-3 rounded-xl border bg-red-50 border-red-200 text-red-700 text-sm">{error}</div>}{message&&<div className="mb-4 px-4 py-3 rounded-xl border bg-green-50 border-green-200 text-green-800 text-sm">{message}</div>}
+ {tab==='sale'?<div><ScaleBar scale={scale}/><div className="grid lg:grid-cols-[1fr_390px] gap-5 mt-4"><div><div className="relative mb-3"><Search size={17} className="absolute left-3 top-3 text-warm-gray"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar producto..." className={`${cls} pl-9`}/></div><div className="flex flex-wrap gap-1 mb-4"><button onClick={()=>setLetter(null)} className={`px-2 h-8 rounded ${!letter?'bg-burgundy text-cream':'bg-white border'}`}>Todos</button>{'ABCDEFGHIJKLMNÑOPQRSTUVWXYZ'.split('').map(l=><button key={l} disabled={!letters.has(l)} onClick={()=>setLetter(letter===l?null:l)} className={`w-8 h-8 rounded ${letter===l?'bg-burgundy text-cream':'bg-white border'} disabled:opacity-30`}>{l}</button>)}</div><div className="grid grid-cols-2 sm:grid-cols-3 gap-3">{listed.map(p=><button key={p.id} onClick={()=>p.unit==='kg'?setWeighing(p):add(p)} className="text-left bg-white border border-border rounded-2xl p-4 hover:border-burgundy"><div className="font-semibold text-sm">{p.name}</div><div className="font-num text-burgundy font-bold mt-2">{fmt(price(p))} <span className="text-xs text-warm-gray">/ {p.unit}</span></div></button>)}</div></div><aside className="bg-white rounded-2xl border border-border shadow-sm h-fit lg:sticky lg:top-8"><div className="p-3 border-b"><div className="grid grid-cols-2 gap-2 mb-3">{carts.map((c,i)=><button key={i} onClick={()=>setActive(i as 0|1)} className={`p-2 rounded-lg text-sm font-semibold ${active===i?'bg-burgundy text-cream':'bg-cream-dark text-warm-gray'}`}>Carrito {i+1} · {c.items.length}</button>)}</div><div className="relative"><Search size={15} className="absolute left-3 top-3 text-warm-gray"/><input value={customerSearch} onChange={e=>setCustomerSearch(e.target.value)} placeholder="Cliente, CUIT o teléfono" className={`${cls} pl-8`}/></div><select value={cart.customerId} onChange={e=>edit(c=>({...c,customerId:e.target.value}))} className={`${cls} mt-2`}><option value="">Seleccionar cliente</option>{clientList.filter(c=>c.active).map(c=><option key={c.id} value={c.id}>{c.business_name}</option>)}</select></div><div className="divide-y max-h-[42vh] overflow-y-auto">{cart.items.length===0?<p className="p-8 text-center text-sm text-warm-gray">Elegí productos para este carrito.</p>:cart.items.map(x=><div key={x.product.id} className="p-3 flex gap-2 items-center"><div className="flex-1 min-w-0"><div className="font-semibold text-sm truncate">{x.product.name}</div><div className="text-xs text-warm-gray">{fmt(x.unitPrice)} / {x.product.unit}</div></div><button onClick={()=>setDraft(x.product.id,String(Math.max(0,x.quantity-(x.product.unit==='kg'?.1:1))))} className="p-1 border rounded"><Minus size={13}/></button><input inputMode="decimal" value={x.draft} onChange={e=>setDraft(x.product.id,e.target.value)} className="w-16 p-1 text-center border rounded font-num"/><button onClick={()=>setDraft(x.product.id,String(x.quantity+(x.product.unit==='kg'?.1:1)))} className="p-1 border rounded"><Plus size={13}/></button><button onClick={()=>remove(x.product.id)} className="text-red-500"><Trash2 size={15}/></button></div>)}</div><div className="p-4 border-t"><div className="flex justify-between mb-3"><span className="text-sm text-warm-gray">Total</span><b className="font-num text-3xl text-burgundy">{fmt(total)}</b></div><select value={cart.paymentMethod} onChange={e=>edit(c=>({...c,paymentMethod:e.target.value as Method}))} className={`${cls} mb-3`}><option>Efectivo</option><option>Transferencia</option>{selected?.has_current_account&&<option>Cuenta corriente</option>}</select>{!sessionId&&<p className="text-xs text-red-600 mb-2">Abrí la caja compartida para registrar cobros.</p>}<button disabled={saving||!sessionId||!selected||!cart.items.length} onClick={register} className="w-full py-3 rounded-xl bg-burgundy text-cream font-bold disabled:opacity-40">{saving?'Registrando...':'Confirmar venta'}</button></div></aside></div></div>:tab==='customers'&&role==='admin'?<Customers customers={customers} balances={Object.fromEntries(customers.map(c=>[c.id,balanceFor(c.id)]))} onNew={()=>setModal('new')} onEdit={setModal} onToggle={toggle} onPay={setPaymentCustomer}/>:<PriceTable products={products} costFor={costFor} markupDrafts={markupDrafts} priceDrafts={priceDrafts} setMarkupDrafts={setMarkupDrafts} setPriceDrafts={setPriceDrafts} draftPrice={draftPrice} onSave={savePrice}/>} {weighing&&<Weigh product={weighing} scale={scale} onClose={()=>setWeighing(null)} onAdd={kg=>{add(weighing,kg);setWeighing(null)}}/>}{modal&&<CustomerModal customer={modal} onClose={()=>setModal(null)} onSave={saveCustomer}/>} {paymentCustomer&&<Payment customer={paymentCustomer} onClose={()=>setPaymentCustomer(null)} onSave={pay}/>} {lastTransfer&&<TransferReceipt receipt={lastTransfer}/>}</div>
 }
-interface Product { id: string; name: string; unit: string; price: number | null; active: boolean }
-interface RecipeItem { quantity: number; raw_material?: { unit_price: number } }
-interface Recipe { product_id: string; yield_qty: number; items: RecipeItem[] }
-interface PriceSetting { markup_pct: number | null; price: number }
-interface AccountPayment { id: string; customer_id: string; amount: number; method: string; received_at: string }
-interface CartItem { product: Product; quantity: number; unitPrice: number }
-type Tab = 'sale' | 'customers' | 'prices'
-type Role = 'admin' | 'cashier' | null
+function Shell({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}){return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}><div className="bg-white rounded-3xl w-full max-w-md" onClick={e=>e.stopPropagation()}><div className="p-4 border-b flex justify-between"><b>{title}</b><button onClick={onClose}><X/></button></div><div className="p-5">{children}</div></div></div>}
+function Customers({customers,balances,onNew,onEdit,onToggle,onPay}:{customers:Customer[];balances:Record<string,number>;onNew:()=>void;onEdit:(c:Customer)=>void;onToggle:(c:Customer)=>void;onPay:(c:Customer)=>void}){return <div><button onClick={onNew} className="mb-4 px-4 py-2 bg-burgundy text-cream rounded-xl">Nuevo comercio</button><div className="bg-white rounded-2xl border overflow-hidden"><table className="w-full"><thead><tr className="bg-cream-dark text-left text-xs text-warm-gray"><th className="p-3">Comercio</th><th className="p-3 text-right">Saldo</th><th className="p-3 text-right">Acciones</th></tr></thead><tbody>{customers.map(c=>{const balance=balances[c.id]??0;return <tr key={c.id} className={`border-b ${!c.active?'opacity-50':''}`}><td className="p-3"><b>{c.business_name}</b><div className="text-xs text-warm-gray">{c.contact_name||c.phone||'—'} {!c.active&&'· Dado de baja'}</div></td><td className={`p-3 text-right font-num font-bold ${balance>0?'text-red-600':'text-charcoal'}`}>{fmt(balance)}</td><td className="p-3 text-right"><button onClick={()=>onEdit(c)} className="border rounded px-2 py-1 text-xs mr-2">Editar</button>{c.has_current_account&&<button onClick={()=>onPay(c)} className="border rounded px-2 py-1 text-xs mr-2">Cobrar saldo</button>}<button onClick={()=>onToggle(c)} className="border rounded px-2 py-1 text-xs">{c.active?'Dar de baja':'Reactivar'}</button></td></tr>})}</tbody></table></div></div>}
+function CustomerModal({customer,onClose,onSave}:{customer:Customer|'new';onClose:()=>void;onSave:(c:Customer)=>Promise<string|null>}){const[f,setF]=useState<Customer>(customer==='new'?{id:'',business_name:'',contact_name:'',tax_id:'',phone:'',address:'',has_current_account:false,active:true}:customer),[err,setErr]=useState('');return <Shell title={customer==='new'?'Nuevo comercio':'Editar comercio'} onClose={onClose}><div className="space-y-3">{([['business_name','Comercio'],['contact_name','Contacto'],['tax_id','CUIT'],['phone','Teléfono'],['address','Dirección']]as const).map(([k,l])=><input key={k} placeholder={l} value={f[k]} onChange={e=>setF({...f,[k]:e.target.value})} className={cls}/>)}<label className="block text-sm"><input type="checkbox" checked={f.has_current_account} onChange={e=>setF({...f,has_current_account:e.target.checked})}/> Habilitar cuenta corriente</label>{err&&<p className="text-red-600 text-sm">{err}</p>}<button className="w-full py-3 bg-burgundy text-cream rounded-xl" onClick={async()=>{if(!f.business_name.trim())return;const e=await onSave({...f,id:f.id||crypto.randomUUID(),business_name:f.business_name.trim()});if(e)setErr(e)}}>Guardar comercio</button></div></Shell>}
+function Payment({customer,onClose,onSave}:{customer:Customer;onClose:()=>void;onSave:(c:Customer,a:number,m:'Efectivo'|'Transferencia')=>Promise<string|null>}){const[a,setA]=useState(''),[m,setM]=useState<'Efectivo'|'Transferencia'>('Transferencia'),[err,setErr]=useState('');return <Shell title={`Cobro de ${customer.business_name}`} onClose={onClose}><input value={a} onChange={e=>setA(e.target.value)} placeholder="Importe" className={cls}/><select value={m} onChange={e=>setM(e.target.value as typeof m)} className={`${cls} mt-3`}><option>Transferencia</option><option>Efectivo</option></select>{err&&<p className="text-red-600 text-sm">{err}</p>}<button className="w-full mt-3 py-3 bg-burgundy text-cream rounded-xl" onClick={async()=>{const e=await onSave(customer,parse(a),m);if(e)setErr(e)}}>Registrar cobro</button></Shell>}
+function Weigh({product,scale,onClose,onAdd}:{product:Product;scale:ReturnType<typeof useScale>;onClose:()=>void;onAdd:(kg:number)=>void}){const[v,setV]=useState('');useEffect(()=>{if(scale.connected&&scale.live&&scale.weight!=null)setV(scale.weight>EMPTY_KG?scale.weight.toFixed(3):'')},[scale.connected,scale.live,scale.weight]);const kg=parse(v);return <Shell title={`Pesar ${product.name}`} onClose={onClose}><div className="text-center text-4xl font-num font-bold mb-4"><Scale className="inline mr-2"/>{scale.weight?.toFixed(3).replace('.',',')??'—'} kg</div><input value={v} onChange={e=>setV(e.target.value)} inputMode="decimal" className={cls} placeholder="0,500"/><button disabled={!Number.isFinite(kg)||kg<=0||(scale.connected&&!scale.stable)} onClick={()=>onAdd(Math.round(kg*1000)/1000)} className="w-full mt-3 py-3 bg-burgundy text-cream rounded-xl disabled:opacity-40">Agregar al carrito</button></Shell>}
 
-const CUSTOMERS_KEY = 'wholesale_customers_v1'
-const PRICES_KEY = 'wholesale_prices_v1'
-const PAYMENTS_KEY = 'wholesale_account_payments_v1'
-const WHOLESALE_MARKER = '__MAYORISTA__:'
+function PriceTable({products,costFor,markupDrafts,priceDrafts,setMarkupDrafts,setPriceDrafts,draftPrice,onSave}:{products:Product[];costFor:(id:string)=>number|null;markupDrafts:Record<string,string>;priceDrafts:Record<string,string>;setMarkupDrafts:React.Dispatch<React.SetStateAction<Record<string,string>>>;setPriceDrafts:React.Dispatch<React.SetStateAction<Record<string,string>>>;draftPrice:(product:Product)=>number;onSave:(product:Product)=>void}){return <div className="bg-white rounded-2xl border overflow-x-auto"><div className="p-4 border-b text-sm text-warm-gray">Con receta se calcula por costo y margen. Sin receta, se carga el precio manual. Los productos ocultos también se administran acá.</div><table className="w-full"><thead><tr className="bg-cream-dark text-left text-xs text-warm-gray"><th className="p-3">Producto</th><th className="p-3 text-right">Costo</th><th className="p-3">Margen %</th><th className="p-3">Precio mayorista</th><th/></tr></thead><tbody>{products.map(product=>{const cost=costFor(product.id);return <tr key={product.id} className="border-b"><td className="p-3 font-semibold">{product.name}<div className="text-xs text-warm-gray">{product.show_on_pos===false?'Oculto del mostrador':'Visible en mostrador'}</div></td><td className="p-3 text-right font-num">{cost===null?'Sin receta':fmt(cost)}</td><td className="p-3"><input disabled={cost===null} value={markupDrafts[product.id]??''} onChange={e=>setMarkupDrafts(old=>({...old,[product.id]:e.target.value}))} className="w-24 border rounded p-2 disabled:bg-cream-dark" placeholder="0"/></td><td className="p-3"><input disabled={cost!==null} value={cost===null?priceDrafts[product.id]??'':String(draftPrice(product))} onChange={e=>setPriceDrafts(old=>({...old,[product.id]:e.target.value}))} className="w-32 border rounded p-2 disabled:bg-cream-dark"/></td><td className="p-3"><button onClick={()=>onSave(product)} className="p-2 border rounded text-burgundy"><Save size={15}/></button></td></tr>})}</tbody></table></div>}
 
-const fmt = (value: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(value)
-const inputCls = 'w-full px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white'
-const lineSubtotal = (item: CartItem) => roundUpTo100(item.quantity * item.unitPrice)
+function ScaleBar({scale}:{scale:ReturnType<typeof useScale>}){if(!scale.supported)return <div className="flex gap-2 items-center p-3 rounded-xl border bg-amber-50 text-amber-800 text-sm"><AlertTriangle size={16}/>Este navegador no permite leer la balanza. Podés escribir el peso manualmente.</div>;const state=!scale.connected?['Balanza desconectada','bg-cream-dark text-warm-gray']:!scale.live?['Sin lectura','bg-red-100 text-red-700']:!scale.hasLoad?['Plato vacío','bg-cream-dark text-warm-gray']:scale.stable?['Peso estable','bg-green-100 text-green-700']:['Estabilizando…','bg-amber-100 text-amber-700'];return <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white border rounded-xl shadow-sm"><div className="flex items-center gap-3"><Scale size={24} className={scale.live?'text-green-600':'text-warm-gray'}/><span className="font-num font-bold text-3xl">{scale.live&&scale.weight!==null?`${scale.weight.toFixed(3).replace('.',',')} kg`:'—'}</span><span className={`px-2 py-1 rounded-full text-xs font-semibold ${state[1]}`}>{state[0]}</span>{scale.tare>0&&<span className="text-xs text-blue-700">Tara {scale.tare.toFixed(3).replace('.',',')} kg</span>}</div><div className="flex gap-2">{!scale.connected?<button onClick={()=>void scale.connect(false)} className="flex gap-1 items-center px-3 py-2 bg-burgundy text-cream rounded-lg text-xs font-bold"><Cable size={14}/>Conectar</button>:<><button onClick={scale.tare>0?scale.clearTare:scale.applyTare} disabled={!scale.live||scale.raw===null} className="px-3 py-2 border rounded-lg text-xs disabled:opacity-40">{scale.tare>0?'Quitar tara':'Tara'}</button><button onClick={()=>void scale.disconnect()} className="px-3 py-2 border rounded-lg text-xs">Desconectar</button></>}</div></div>}
 
-export default function WholesalePage() {
-  const supabase = createClient()
-  const [role, setRole] = useState<Role>(null)
-  const [tab, setTab] = useState<Tab>('sale')
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [products, setProducts] = useState<Product[]>([])
-  const [recipes, setRecipes] = useState<Recipe[]>([])
-  const [priceSettings, setPriceSettings] = useState<Record<string, PriceSetting>>({})
-  const [payments, setPayments] = useState<AccountPayment[]>([])
-  const [accountSales, setAccountSales] = useState<Record<string, number>>({})
-  const [cashSessionId, setCashSessionId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [customerId, setCustomerId] = useState('')
-  const [cart, setCart] = useState<CartItem[]>([])
-  const [paymentMethod, setPaymentMethod] = useState<'Efectivo' | 'Transferencia' | 'Cuenta corriente'>('Efectivo')
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
-  const [lastTransfer, setLastTransfer] = useState<{ id: string; customer: string; total: number; items: CartItem[] } | null>(null)
-  const [customerModal, setCustomerModal] = useState<Customer | 'new' | null>(null)
-  const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null)
-  const [markupDrafts, setMarkupDrafts] = useState<Record<string, string>>({})
-  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({})
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setMessage('')
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: roleRow } = user
-      ? await supabase.from('user_roles').select('role').eq('user_id', user.id).maybeSingle()
-      : { data: null }
-    const nextRole = (roleRow?.role as Role) ?? null
-    setRole(nextRole)
-
-    const [storedCustomers, storedPrices, storedPayments, productResult, sessionResult] = await Promise.all([
-      readJsonSetting<Customer[]>(supabase, CUSTOMERS_KEY, []),
-      readJsonSetting<Record<string, PriceSetting>>(supabase, PRICES_KEY, {}),
-      readJsonSetting<AccountPayment[]>(supabase, PAYMENTS_KEY, []),
-      supabase.from('products').select('id, name, unit, price, active').eq('active', true).order('name'),
-      supabase.from('cash_sessions').select('id').eq('status', 'open').order('opened_at', { ascending: false }).limit(1).maybeSingle(),
-    ])
-
-    const nextProducts = (productResult.data ?? []).map((product) => ({
-      ...product,
-      price: product.price === null ? null : Number(product.price),
-    })) as Product[]
-    setCustomers(storedCustomers)
-    setProducts(nextProducts)
-    setPriceSettings(storedPrices)
-    setPayments(storedPayments)
-    setCashSessionId(sessionResult.data?.id ?? null)
-    setMarkupDrafts(Object.fromEntries(nextProducts.map((product) => [product.id, storedPrices[product.id]?.markup_pct === null || storedPrices[product.id]?.markup_pct === undefined ? '' : String(storedPrices[product.id].markup_pct)])))
-    setPriceDrafts(Object.fromEntries(nextProducts.map((product) => [product.id, String(storedPrices[product.id]?.price ?? Number(product.price ?? 0))])))
-    setCustomerId((current) => current || storedCustomers.find((customer) => customer.active)?.id || '')
-
-    if (nextRole === 'admin') {
-      const [{ data: recipeRows }, { data: salesRows }] = await Promise.all([
-        supabase.from('recipes').select('product_id, yield_qty, items:recipe_items(quantity, raw_material:raw_materials(unit_price))'),
-        supabase.from('sales').select('total, payment_method, items:sale_items(description)').eq('payment_method', 'Cuenta corriente'),
-      ])
-      setRecipes((recipeRows ?? []) as unknown as Recipe[])
-      const totals: Record<string, number> = {}
-      for (const sale of salesRows ?? []) {
-        const items = (sale.items ?? []) as unknown as Array<{ description: string }>
-        const marker = items.find((item) => item.description.startsWith(WHOLESALE_MARKER))
-        const id = marker?.description.slice(WHOLESALE_MARKER.length)
-        if (id) totals[id] = (totals[id] ?? 0) + Number(sale.total)
-      }
-      setAccountSales(totals)
-    } else {
-      setRecipes([])
-      setAccountSales({})
-      setTab('sale')
-    }
-    setLoading(false)
-  }, [supabase])
-
-  useEffect(() => { void load() }, [load])
-
-  const isAdmin = role === 'admin'
-  const selectedCustomer = customers.find((customer) => customer.id === customerId)
-  useEffect(() => {
-    if (!selectedCustomer?.has_current_account && paymentMethod === 'Cuenta corriente') setPaymentMethod('Efectivo')
-  }, [selectedCustomer, paymentMethod])
-
-  const costFor = useCallback((productId: string) => {
-    const recipe = recipes.find((item) => item.product_id === productId)
-    if (!recipe) return null
-    const total = (recipe.items ?? []).reduce((sum, item) => sum + Number(item.quantity) * Number(item.raw_material?.unit_price ?? 0), 0)
-    return Number(recipe.yield_qty) > 0 ? total / Number(recipe.yield_qty) : total
-  }, [recipes])
-
-  const wholesalePrice = useCallback((product: Product) => roundUpTo100(Number(priceSettings[product.id]?.price ?? product.price ?? 0)), [priceSettings])
-  const total = cart.reduce((sum, item) => sum + lineSubtotal(item), 0)
-
-  const addProduct = (product: Product) => {
-    const price = wholesalePrice(product)
-    setCart((previous) => {
-      const found = previous.find((item) => item.product.id === product.id)
-      if (found) return previous.map((item) => item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item)
-      return [...previous, { product, quantity: 1, unitPrice: price }]
-    })
-  }
-
-  const changeQuantity = (productId: string, value: number) => {
-    setCart((previous) => previous.flatMap((item) => item.product.id !== productId ? [item] : value > 0 ? [{ ...item, quantity: value }] : []))
-  }
-
-  const registerSale = async () => {
-    if (!selectedCustomer || cart.length === 0) return
-    setSaving(true)
-    setMessage('')
-    const clientUuid = crypto.randomUUID()
-    const items = [
-      ...cart.map((item) => ({
-        product_id: item.product.id,
-        description: item.product.name,
-        unit: item.product.unit,
-        quantity: item.quantity,
-        unit_price: item.unitPrice,
-        subtotal: lineSubtotal(item),
-      })),
-      { product_id: null, description: `${WHOLESALE_MARKER}${selectedCustomer.id}`, unit: 'meta', quantity: 1, unit_price: 0, subtotal: 0 },
-    ]
-    const { data, error } = await supabase.rpc('register_sale', {
-      p_client_uuid: clientUuid,
-      p_cash_session_id: cashSessionId,
-      p_payment_method: paymentMethod,
-      p_items: items,
-    })
-    setSaving(false)
-    if (error) {
-      setMessage(`No se pudo registrar la venta: ${error.message}`)
-      return
-    }
-    if (paymentMethod === 'Transferencia') setLastTransfer({ id: String(data), customer: selectedCustomer.business_name, total, items: [...cart] })
-    else setLastTransfer(null)
-    setCart([])
-    setMessage(paymentMethod === 'Transferencia' ? 'Venta registrada. El comprobante está listo para imprimir.' : 'Venta registrada sin ticket.')
-    await load()
-  }
-
-  const draftPrice = (product: Product) => {
-    const cost = costFor(product.id)
-    if (cost === null) return Number((priceDrafts[product.id] ?? '').replace(',', '.')) || 0
-    const markup = Number((markupDrafts[product.id] ?? '').replace(',', '.'))
-    return roundUpTo100(cost * (1 + (Number.isFinite(markup) ? markup : 0) / 100))
-  }
-
-  const savePrice = async (product: Product) => {
-    if (!isAdmin) return
-    const cost = costFor(product.id)
-    const rawMarkup = markupDrafts[product.id] ?? ''
-    const markup = rawMarkup === '' ? null : Number(rawMarkup.replace(',', '.'))
-    const rawPrice = cost === null
-      ? Number((priceDrafts[product.id] ?? '').replace(',', '.'))
-      : cost * (1 + (markup ?? 0) / 100)
-    if (!Number.isFinite(rawPrice) || rawPrice < 0 || (markup !== null && (!Number.isFinite(markup) || markup < 0))) return
-    const price = roundUpTo100(rawPrice)
-    const next = { ...priceSettings, [product.id]: { markup_pct: cost === null ? null : markup, price } }
-    const error = await writeJsonSetting(supabase, PRICES_KEY, next)
-    if (error) setMessage(`No se pudo guardar el precio mayorista: ${error}`)
-    else {
-      setMessage('Precio mayorista guardado.')
-      setPriceSettings(next)
-      setPriceDrafts((previous) => ({ ...previous, [product.id]: String(price) }))
-    }
-  }
-
-  const saveCustomer = async (customer: Customer) => {
-    if (!isAdmin) return 'No tenés permisos para modificar clientes.'
-    const next = customers.some((item) => item.id === customer.id)
-      ? customers.map((item) => item.id === customer.id ? customer : item)
-      : [...customers, customer]
-    const error = await writeJsonSetting(supabase, CUSTOMERS_KEY, next)
-    if (!error) {
-      setCustomers(next)
-      setCustomerId((current) => current || customer.id)
-      setCustomerModal(null)
-    }
-    return error
-  }
-
-  const savePayment = async (payment: AccountPayment) => {
-    if (!isAdmin) return 'No tenés permisos para registrar pagos.'
-    const next = [...payments, payment]
-    const error = await writeJsonSetting(supabase, PAYMENTS_KEY, next)
-    if (!error) {
-      setPayments(next)
-      setPaymentCustomer(null)
-    }
-    return error
-  }
-
-  const balanceFor = (customerIdValue: string) => {
-    const paid = payments.filter((payment) => payment.customer_id === customerIdValue).reduce((sum, payment) => sum + Number(payment.amount), 0)
-    return (accountSales[customerIdValue] ?? 0) - paid
-  }
-  const activeProducts = useMemo(() => products.filter((product) => wholesalePrice(product) > 0), [products, wholesalePrice])
-
-  return (
-    <div className="max-w-6xl mx-auto">
-      <div className="mb-6"><h1 className="font-sans text-3xl font-bold text-charcoal">Mostrador mayorista</h1><p className="font-body text-warm-gray mt-1">Ventas exclusivas a comercios dados de alta, con precios comunes para todos.</p></div>
-
-      {isAdmin && <div className="no-print flex flex-wrap gap-2 mb-6 bg-white border border-border rounded-xl p-1 w-fit">{([['sale', 'Nueva venta', ShoppingCart], ['customers', 'Clientes y cuentas', Users], ['prices', 'Márgenes y precios', Banknote]] as const).map(([value, label, Icon]) => <button key={value} onClick={() => setTab(value)} className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-body text-sm font-semibold ${tab === value ? 'bg-burgundy text-cream' : 'text-warm-gray hover:text-charcoal'}`}><Icon size={16} /> {label}</button>)}</div>}
-
-      {message && <div className={`no-print mb-4 px-4 py-3 rounded-xl border font-body text-sm ${message.includes('registrada') || message.includes('guardado') ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'}`}>{message}</div>}
-
-      {loading ? <div className="text-center py-16 text-warm-gray">Cargando...</div> : tab === 'sale' ? (
-        <div className="no-print grid lg:grid-cols-[1fr_390px] gap-5">
-          <div><div className="bg-white border border-border rounded-2xl p-4 mb-4"><label className="font-body text-xs text-warm-gray uppercase tracking-wide">Comercio</label><select value={customerId} onChange={(event) => setCustomerId(event.target.value)} className={`${inputCls} mt-1`}><option value="">— Seleccionar cliente —</option>{customers.filter((customer) => customer.active).map((customer) => <option key={customer.id} value={customer.id}>{customer.business_name}</option>)}</select>{isAdmin && customers.length === 0 && <button onClick={() => setCustomerModal('new')} className="mt-3 text-burgundy font-body text-sm font-semibold hover:underline">Dar de alta el primer comercio</button>}</div><div className="grid grid-cols-2 sm:grid-cols-3 gap-3">{activeProducts.map((product) => <button key={product.id} onClick={() => addProduct(product)} className="text-left bg-white border border-border rounded-2xl p-4 min-h-24 hover:border-burgundy hover:shadow-sm transition-all"><div className="font-body text-sm font-semibold text-charcoal">{product.name}</div><div className="font-num text-base font-bold text-burgundy mt-2">{fmt(wholesalePrice(product))} <span className="font-body text-xs font-normal text-warm-gray">/ {product.unit}</span></div></button>)}</div></div>
-          <div className="bg-white rounded-2xl border border-border shadow-sm h-fit lg:sticky lg:top-8"><div className="p-4 border-b border-border font-sans font-bold text-charcoal flex items-center gap-2"><ShoppingCart size={18} /> Pedido mayorista</div><div className="divide-y divide-border/60 max-h-[42vh] overflow-y-auto">{cart.length === 0 ? <p className="p-8 text-center font-body text-sm text-warm-gray">Elegí productos para comenzar.</p> : cart.map((item) => <div key={item.product.id} className="p-3 flex items-center gap-2"><div className="flex-1 min-w-0"><div className="font-body text-sm font-semibold truncate">{item.product.name}</div><div className="font-num text-xs text-warm-gray">{fmt(item.unitPrice)} / {item.product.unit} · Subtotal cobrado {fmt(lineSubtotal(item))}</div></div><button onClick={() => changeQuantity(item.product.id, item.quantity - (item.product.unit === 'kg' ? 0.1 : 1))} className="p-1.5 border border-border rounded"><Minus size={13} /></button><input type="number" min="0.001" step={item.product.unit === 'kg' ? '0.001' : '1'} value={item.quantity} onChange={(event) => changeQuantity(item.product.id, Number(event.target.value))} className="w-20 px-2 py-1.5 text-center border border-border rounded font-num text-sm" /><button onClick={() => changeQuantity(item.product.id, item.quantity + (item.product.unit === 'kg' ? 0.1 : 1))} className="p-1.5 border border-border rounded"><Plus size={13} /></button><button onClick={() => changeQuantity(item.product.id, 0)} className="p-1.5 text-red-500"><Trash2 size={14} /></button></div>)}</div><div className="p-4 border-t border-border"><div className="flex justify-between items-center mb-3"><span className="font-body text-sm text-warm-gray">Total</span><span className="font-num text-3xl font-bold text-burgundy">{fmt(total)}</span></div><label className="font-body text-xs text-warm-gray uppercase tracking-wide">Forma de pago</label><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as typeof paymentMethod)} className={`${inputCls} mt-1 mb-2`}><option>Efectivo</option><option>Transferencia</option>{selectedCustomer?.has_current_account && <option>Cuenta corriente</option>}</select><p className="font-body text-xs text-warm-gray mb-3">{paymentMethod === 'Transferencia' ? 'Esta venta genera comprobante imprimible.' : 'Esta venta se registra sin ticket.'}</p><button onClick={registerSale} disabled={saving || !selectedCustomer || cart.length === 0} className="w-full py-3.5 rounded-xl bg-burgundy text-cream font-body font-bold disabled:opacity-40 hover:bg-burgundy-dark">{saving ? 'Registrando...' : 'Confirmar venta'}</button></div></div>
-        </div>
-      ) : tab === 'customers' && isAdmin ? (
-        <div className="no-print"><div className="flex justify-end mb-4"><button onClick={() => setCustomerModal('new')} className="flex items-center gap-2 px-4 py-2.5 bg-burgundy text-cream rounded-xl font-body text-sm font-semibold"><Plus size={15} /> Nuevo comercio</button></div><div className="bg-white border border-border rounded-2xl overflow-hidden"><table className="w-full"><thead><tr className="bg-cream-dark border-b border-border"><th className="text-left px-4 py-3 text-xs uppercase text-warm-gray">Comercio</th><th className="text-left px-4 py-3 text-xs uppercase text-warm-gray hidden sm:table-cell">Cuenta</th><th className="text-right px-4 py-3 text-xs uppercase text-warm-gray">Debe</th><th className="text-right px-4 py-3 text-xs uppercase text-warm-gray">Acciones</th></tr></thead><tbody>{customers.map((customer) => { const balance = balanceFor(customer.id); return <tr key={customer.id} className="border-b border-border/50"><td className="px-4 py-3"><div className="font-body text-sm font-semibold">{customer.business_name}</div><div className="font-body text-xs text-warm-gray">{customer.contact_name || customer.phone || '—'}</div></td><td className="px-4 py-3 hidden sm:table-cell font-body text-sm">{customer.has_current_account ? 'Cuenta corriente' : 'Sin cuenta'}</td><td className={`px-4 py-3 text-right font-num font-bold ${balance > 0 ? 'text-red-600' : 'text-charcoal'}`}>{fmt(balance)}</td><td className="px-4 py-3"><div className="flex justify-end gap-2"><button onClick={() => setCustomerModal(customer)} className="px-3 py-1.5 border border-border rounded-lg text-xs font-body">Editar</button>{customer.has_current_account && <button onClick={() => setPaymentCustomer(customer)} className="px-3 py-1.5 bg-burgundy/10 text-burgundy rounded-lg text-xs font-body font-semibold">Registrar pago</button>}</div></td></tr> })}</tbody></table></div></div>
-      ) : isAdmin ? (
-        <div className="no-print bg-white border border-border rounded-2xl overflow-hidden"><div className="p-4 border-b border-border"><p className="font-body text-sm text-warm-gray">Cada producto puede tener su propio margen. Si tiene receta se calcula sobre el costo; si no tiene receta, cargá directamente su precio mayorista.</p></div><table className="w-full"><thead><tr className="bg-cream-dark border-b border-border"><th className="text-left px-4 py-3 text-xs uppercase text-warm-gray">Producto</th><th className="text-right px-4 py-3 text-xs uppercase text-warm-gray hidden sm:table-cell">Costo</th><th className="text-left px-4 py-3 text-xs uppercase text-warm-gray">Margen %</th><th className="text-left px-4 py-3 text-xs uppercase text-warm-gray">Precio mayorista</th><th /></tr></thead><tbody>{products.map((product) => { const cost = costFor(product.id); return <tr key={product.id} className="border-b border-border/50"><td className="px-4 py-3 font-body text-sm font-semibold">{product.name}</td><td className="px-4 py-3 text-right font-num text-sm hidden sm:table-cell">{cost === null ? 'Sin receta' : fmt(cost)}</td><td className="px-4 py-3"><input type="number" min="0" step="any" disabled={cost === null} value={markupDrafts[product.id] ?? ''} onChange={(event) => setMarkupDrafts((previous) => ({ ...previous, [product.id]: event.target.value }))} placeholder={cost === null ? 'No aplica' : '0'} className="w-28 px-3 py-2 border border-border rounded-lg font-num text-sm disabled:bg-cream-dark" /></td><td className="px-4 py-3"><input type="number" min="0" step="any" disabled={cost !== null} value={cost === null ? priceDrafts[product.id] ?? '' : draftPrice(product)} onChange={(event) => setPriceDrafts((previous) => ({ ...previous, [product.id]: event.target.value }))} className="w-32 px-3 py-2 border border-border rounded-lg font-num text-sm disabled:bg-cream-dark" /></td><td className="px-4 py-3 text-right"><button onClick={() => savePrice(product)} className="p-2 border border-border rounded-lg text-burgundy"><Save size={15} /></button></td></tr> })}</tbody></table></div>
-      ) : null}
-
-      {lastTransfer && <div className="mt-6"><div className="no-print flex items-center justify-between bg-green-50 border border-green-200 rounded-xl p-4 mb-4"><span className="flex items-center gap-2 font-body text-sm text-green-800"><CheckCircle2 size={18} /> Comprobante de transferencia disponible</span><button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 bg-burgundy text-cream rounded-lg font-body text-sm font-semibold"><Printer size={15} /> Imprimir</button></div><div className="print-area hidden print:block bg-white p-8"><h2 className="font-sans text-2xl font-bold">Panadería Villa · Comprobante mayorista</h2><p className="mt-2 font-body">Cliente: {lastTransfer.customer}</p><p className="font-body">Operación: {lastTransfer.id}</p><p className="font-body">Medio de pago: Transferencia</p><table className="w-full mt-6"><tbody>{lastTransfer.items.map((item) => <tr key={item.product.id} className="border-b"><td className="py-2">{item.product.name}</td><td className="py-2 text-right">{item.quantity} {item.product.unit}</td><td className="py-2 text-right">{fmt(lineSubtotal(item))}</td></tr>)}</tbody></table><div className="text-right text-2xl font-bold mt-4">Total {fmt(lastTransfer.total)}</div></div></div>}
-      {customerModal && isAdmin && <CustomerModal customer={customerModal} onClose={() => setCustomerModal(null)} onSave={saveCustomer} />}
-      {paymentCustomer && isAdmin && <AccountPaymentModal customer={paymentCustomer} onClose={() => setPaymentCustomer(null)} onSave={savePayment} />}
-    </div>
-  )
-}
-
-function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}><div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={(event) => event.stopPropagation()}><div className="flex justify-between items-center p-5 border-b border-border"><h2 className="font-sans text-lg font-bold">{title}</h2><button onClick={onClose}><X size={20} /></button></div><div className="p-5 flex flex-col gap-4">{children}</div></div></div>
-}
-
-function CustomerModal({ customer, onClose, onSave }: { customer: Customer | 'new'; onClose: () => void; onSave: (customer: Customer) => Promise<string | null> }) {
-  const original = customer === 'new' ? null : customer
-  const [form, setForm] = useState<Customer>(original ?? { id: crypto.randomUUID(), business_name: '', contact_name: '', tax_id: '', phone: '', address: '', has_current_account: false, active: true })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const save = async () => { if (!form.business_name.trim()) return; setSaving(true); setError(''); const saveError = await onSave({ ...form, business_name: form.business_name.trim() }); setSaving(false); if (saveError) setError(saveError) }
-  return <ModalShell title={original ? 'Editar comercio' : 'Nuevo comercio'} onClose={onClose}>{([['business_name', 'Nombre del comercio *'], ['contact_name', 'Persona de contacto'], ['tax_id', 'CUIT / identificación'], ['phone', 'Teléfono'], ['address', 'Dirección']] as const).map(([field, label]) => <div key={field} className="flex flex-col gap-1"><label className="text-xs uppercase text-warm-gray">{label}</label><input value={form[field]} onChange={(event) => setForm((previous) => ({ ...previous, [field]: event.target.value }))} className={inputCls} /></div>)}<label className="flex items-center gap-2 font-body text-sm"><input type="checkbox" checked={form.has_current_account} onChange={(event) => setForm((previous) => ({ ...previous, has_current_account: event.target.checked }))} className="accent-burgundy" /> Habilitar cuenta corriente</label><label className="flex items-center gap-2 font-body text-sm"><input type="checkbox" checked={form.active} onChange={(event) => setForm((previous) => ({ ...previous, active: event.target.checked }))} className="accent-burgundy" /> Cliente activo</label>{error && <p className="text-sm text-red-600">{error}</p>}<button onClick={save} disabled={saving || !form.business_name.trim()} className="flex items-center justify-center gap-2 py-3 bg-burgundy text-cream rounded-xl font-body font-bold disabled:opacity-50"><Building2 size={16} /> {saving ? 'Guardando...' : 'Guardar comercio'}</button></ModalShell>
-}
-
-function AccountPaymentModal({ customer, onClose, onSave }: { customer: Customer; onClose: () => void; onSave: (payment: AccountPayment) => Promise<string | null> }) {
-  const [amount, setAmount] = useState('')
-  const [method, setMethod] = useState('Transferencia')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const save = async () => { const value = Number(amount.replace(',', '.')); if (!value || value <= 0) return; setSaving(true); const saveError = await onSave({ id: crypto.randomUUID(), customer_id: customer.id, amount: value, method, received_at: new Date().toISOString() }); setSaving(false); if (saveError) setError(saveError) }
-  return <ModalShell title={`Pago de ${customer.business_name}`} onClose={onClose}><div className="flex flex-col gap-1"><label className="text-xs uppercase text-warm-gray">Importe</label><input type="number" min="0" step="any" value={amount} onChange={(event) => setAmount(event.target.value)} className={inputCls} placeholder="Monto recibido" /></div><div className="flex flex-col gap-1"><label className="text-xs uppercase text-warm-gray">Medio</label><select value={method} onChange={(event) => setMethod(event.target.value)} className={inputCls}><option>Transferencia</option><option>Efectivo</option></select></div>{error && <p className="text-sm text-red-600">{error}</p>}<button onClick={save} disabled={saving || !amount} className="py-3 bg-burgundy text-cream rounded-xl font-body font-bold disabled:opacity-50">{saving ? 'Guardando...' : 'Registrar pago'}</button></ModalShell>
-}
+function TransferReceipt({receipt}:{receipt:{id:string;customer:string;total:number;items:CartItem[]}}){return <div className="mt-5"><div className="no-print flex items-center justify-between p-4 rounded-xl border bg-green-50"><span className="flex gap-2 items-center text-green-800 text-sm"><CheckCircle2 size={17}/>Comprobante de transferencia listo.</span><button onClick={()=>window.print()} className="flex gap-2 items-center px-4 py-2 bg-burgundy text-cream rounded-lg"><Printer size={15}/>Imprimir</button></div><div className="hidden print:block bg-white p-8"><h2 className="text-2xl font-bold">Panadería Villa · Comprobante mayorista</h2><p className="mt-3">Cliente: {receipt.customer}</p><p>Operación: {receipt.id}</p><p>Medio de pago: Transferencia</p><table className="w-full mt-6"><tbody>{receipt.items.map(item=><tr key={item.product.id} className="border-b"><td className="py-2">{item.product.name}</td><td className="py-2 text-right">{item.quantity.toLocaleString('es-AR')} {item.product.unit}</td><td className="py-2 text-right">{fmt(line(item))}</td></tr>)}</tbody></table><div className="text-right text-2xl font-bold mt-4">Total {fmt(receipt.total)}</div></div></div>}
