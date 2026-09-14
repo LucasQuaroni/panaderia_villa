@@ -184,6 +184,13 @@ export default function AdminCostsPage() {
     setRecipeError('')
     setSavingRecipe(true)
 
+    const typedProductName = productName.trim()
+    if (!typedProductName) {
+      setRecipeError('Ingresá un nombre para la receta.')
+      setSavingRecipe(false)
+      return
+    }
+
     const typedManualPrice = Number(manualPriceValue.replace(',', '.'))
     if (manualPrice && (!Number.isFinite(typedManualPrice) || typedManualPrice <= 0)) {
       setRecipeError('Ingresá un precio manual mayor que cero.')
@@ -194,8 +201,7 @@ export default function AdminCostsPage() {
     // Resolver el producto: usar el existente o crearlo al vuelo por nombre.
     let productId = editingRecipe.product_id
     if (isNewRecipe) {
-      const typed = productName.trim()
-      const match = products.find(p => p.name.toLowerCase() === typed.toLowerCase())
+      const match = products.find(p => p.name.toLowerCase() === typedProductName.toLowerCase())
       if (match) {
         if (recipes.some((recipe) => recipe.product_id === match.id)) {
           setRecipeError('Ese producto ya tiene una receta. Editá la receta existente.')
@@ -204,15 +210,21 @@ export default function AdminCostsPage() {
         }
         productId = match.id
       } else {
-        if (!typed) { setRecipeError('Toda receta debe tener un producto asociado.'); setSavingRecipe(false); return }
         const { data: newProd, error: productError } = await supabase.from('products').insert({
-          name: typed,
+          name: typedProductName,
           unit: saleMode,
           manual_price: manualPrice,
           active: true,
         }).select().single()
         if (productError) { setRecipeError(productError.message); setSavingRecipe(false); return }
         productId = newProd?.id
+      }
+    } else {
+      const duplicate = products.find(product => product.id !== productId && product.name.toLowerCase() === typedProductName.toLowerCase())
+      if (duplicate) {
+        setRecipeError(`Ya existe otro producto llamado “${duplicate.name}”. Elegí un nombre diferente.`)
+        setSavingRecipe(false)
+        return
       }
     }
     if (!productId) { setRecipeError('Toda receta debe tener un producto asociado.'); setSavingRecipe(false); return }
@@ -265,8 +277,19 @@ export default function AdminCostsPage() {
 
     const finalPrice = manualPrice ? roundUpTo100(typedManualPrice) : suggestedPrice
 
+    // El nombre de la receta es el del producto asociado, por eso se actualizan juntos.
     // El precio manual se conserva aunque luego cambien ingredientes o margen.
-    await supabase.from('products').update({ price: finalPrice, unit: saleMode, manual_price: manualPrice }).eq('id', productId)
+    const { error: productUpdateError } = await supabase.from('products').update({
+      name: typedProductName,
+      price: finalPrice,
+      unit: saleMode,
+      manual_price: manualPrice,
+    }).eq('id', productId)
+    if (productUpdateError) {
+      setRecipeError(`No se pudo actualizar el nombre: ${productUpdateError.message}`)
+      setSavingRecipe(false)
+      return
+    }
 
     await fetchRecipes() // refresca también la lista de productos
     setSavingRecipe(false)
@@ -489,29 +512,30 @@ export default function AdminCostsPage() {
                   <button onClick={closeRecipe} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
                 </div>
                 <div className="p-6 flex flex-col gap-5">
-                  {/* Producto (permite escribir uno nuevo) */}
+                  {/* El nombre de la receta y el producto asociado se mantienen sincronizados. */}
                   <div className="flex flex-col gap-1">
-                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Producto asociado *</label>
+                    <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Nombre de la receta *</label>
                     <input
                       list="rec-products"
                       value={productName}
                       onChange={e => {
                         const val = e.target.value
                         setProductName(val)
-                        const match = products.find(p => p.name.toLowerCase() === val.trim().toLowerCase())
-                        setEditingRecipe(prev => ({ ...prev!, product_id: match ? match.id : '' }))
-                        if (match) {
-                          setSaleMode(match.unit === 'kg' ? 'kg' : 'unidad')
-                          setManualPrice(match.manual_price ?? false)
-                          setManualPriceValue(match.price === null ? '' : String(match.price))
-                        } else {
-                          setManualPrice(false)
-                          setManualPriceValue('')
+                        if (isNewRecipe) {
+                          const match = products.find(p => p.name.toLowerCase() === val.trim().toLowerCase())
+                          setEditingRecipe(prev => ({ ...prev!, product_id: match ? match.id : '' }))
+                          if (match) {
+                            setSaleMode(match.unit === 'kg' ? 'kg' : 'unidad')
+                            setManualPrice(match.manual_price ?? false)
+                            setManualPriceValue(match.price === null ? '' : String(match.price))
+                          } else {
+                            setManualPrice(false)
+                            setManualPriceValue('')
+                          }
                         }
                       }}
-                      disabled={!isNewRecipe}
-                      placeholder="Elegí un producto o escribí uno nuevo"
-                      className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white disabled:opacity-60"
+                      placeholder="Escribí el nombre de la receta"
+                      className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white"
                     />
                     <datalist id="rec-products">
                       {products.map(p => <option key={p.id} value={p.name} />)}
@@ -519,7 +543,7 @@ export default function AdminCostsPage() {
                     {isNewRecipe && productName.trim() && !products.some(p => p.name.toLowerCase() === productName.trim().toLowerCase()) && (
                       <span className="font-body text-xs text-burgundy">Se creará el producto “{productName.trim()}”.</span>
                     )}
-                    <span className="font-body text-xs text-warm-gray">Toda receta pertenece a un producto. Un producto sí puede existir sin receta.</span>
+                    <span className="font-body text-xs text-warm-gray">{isNewRecipe ? 'Toda receta pertenece a un producto. Un producto sí puede existir sin receta.' : 'Al cambiar este nombre también se actualizará el producto en los mostradores, stock y listas.'}</span>
                   </div>
 
                   {/* Modalidad de venta */}
