@@ -50,14 +50,18 @@ export default function VentasPage() {
   const [sales, setSales] = useState<Sale[]>([])
   const [accountPayments, setAccountPayments] = useState<AccountPayment[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  const fetchSales = useCallback(async () => {
-    setLoading(true)
+  const fetchSales = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true)
+    else setRefreshing(true)
     const start = new Date(day + 'T00:00:00')
     const end = new Date(day + 'T00:00:00')
     end.setDate(end.getDate() + 1)
-    const [{ data }, { data: paymentRows }] = await Promise.all([
+    const [salesResult, paymentsResult] = await Promise.all([
       supabase
         .from('sales')
         .select('id, sold_at, payment_method, total, sale_channel, wholesale_customer:wholesale_customers(business_name), items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
@@ -71,15 +75,43 @@ export default function VentasPage() {
         .lt('received_at', end.toISOString())
         .order('received_at', { ascending: false }),
     ])
-    setSales(((data ?? []) as unknown as Sale[]).map((sale) => ({
-      ...sale,
-      items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
-    })))
-    setAccountPayments((paymentRows ?? []) as unknown as AccountPayment[])
+    if (salesResult.error || paymentsResult.error) {
+      setError(salesResult.error?.message ?? paymentsResult.error?.message ?? 'No se pudieron actualizar las ventas.')
+    } else {
+      setSales(((salesResult.data ?? []) as unknown as Sale[]).map((sale) => ({
+        ...sale,
+        items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
+      })))
+      setAccountPayments((paymentsResult.data ?? []) as unknown as AccountPayment[])
+      setError('')
+      setLastUpdated(new Date())
+    }
     setLoading(false)
+    setRefreshing(false)
   }, [supabase, day])
 
-  useEffect(() => { fetchSales() }, [fetchSales])
+  useEffect(() => { void fetchSales(true) }, [fetchSales])
+
+  // Actualización inmediata por Realtime. El intervalo y los eventos de foco
+  // son respaldo para que la pantalla nunca dependa de una recarga manual.
+  useEffect(() => {
+    const refresh = () => { void fetchSales(false) }
+    const refreshWhenVisible = () => { if (document.visibilityState === 'visible') refresh() }
+    const timer = window.setInterval(refresh, 5000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    const channel = supabase
+      .channel('sales-live-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wholesale_account_payments' }, refresh)
+      .subscribe()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      void supabase.removeChannel(channel)
+    }
+  }, [supabase, fetchSales])
 
   const fmt = (n: number) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
@@ -129,7 +161,12 @@ export default function VentasPage() {
           className="px-3 py-2 border border-border rounded-xl font-body text-sm bg-white focus:outline-none focus:border-burgundy">
           {methods.map(m => <option key={m} value={m}>{m === 'Todos' ? 'Todos los pagos' : m}</option>)}
         </select>
+        <span className="ml-auto font-body text-xs text-warm-gray">
+          {refreshing ? 'Actualizando…' : lastUpdated ? `Actualizado ${lastUpdated.toLocaleTimeString('es-AR')}` : ''}
+        </span>
       </div>
+
+      {error && <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-body text-sm">{error}</div>}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
