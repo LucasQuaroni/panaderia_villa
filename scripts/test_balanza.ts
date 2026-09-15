@@ -89,5 +89,12 @@ const cartsConPesoEnSegundo = updateCartAt(cartsIniciales, 1, cart => [...cart, 
 t('el carrito 2 también recibe su propio pesaje', cartsConPesoEnSegundo, [['pan'], ['facturas', '1,250 kg']])
 t('pesar en el carrito 2 no modifica el carrito 1', cartsConPesoEnSegundo[0], ['pan'])
 
+// Los productos por unidad usan exactamente el mismo enrutamiento explícito.
+// Esta prueba cubre el bug donde el callback conservaba siempre el carrito 1.
+const destinoPorUnidad = 1 as const
+const cartsConUnidad = updateCartAt(cartsIniciales, destinoPorUnidad, cart => [...cart, '1 docena'])
+t('el producto por unidad respeta el carrito 2 seleccionado', cartsConUnidad, [['pan'], ['facturas', '1 docena']])
+t('agregar por unidad al carrito 2 conserva el carrito 1', cartsConUnidad[0], ['pan'])
+
 console.log(`\n${pass} ok, ${fail} fallan`)
 process.exit(fail ? 1 : 0)

@@ -1,8 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { AlertTriangle, Package, Search, Save, X } from 'lucide-react'
+import { AlertTriangle, Package, RefreshCw, Search, Save, X } from 'lucide-react'
 
 type Product = { id: string; name: string; unit: string }
 type StockRow = Product & { stock: number }
@@ -17,35 +17,78 @@ export default function StockPage() {
   const [finalQty, setFinalQty] = useState<Record<string, string>>({})
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [manualProduct, setManualProduct] = useState<Product | null>(null)
+  // Una actualización remota no debe borrar una existencia final que el
+  // usuario está escribiendo. Sólo preservamos los campos realmente editados.
+  const dirtyFinalIds = useRef(new Set<string>())
 
   const fetchAll = useCallback(async () => {
-    const [stockResult, productResult] = await Promise.all([
-      supabase.from('product_stock').select('product_id, name, unit, stock').order('name'),
-      supabase.from('products').select('id, name, unit').eq('active', true).order('name'),
-    ])
-    const rows = (stockResult.data ?? []).map((row) => ({ id: row.product_id as string, name: row.name, unit: row.unit, stock: Number(row.stock) }))
-    if (stockResult.error || productResult.error) setError(stockResult.error?.message ?? productResult.error?.message ?? 'No se pudo cargar el stock.')
-    setStock(rows); setProducts((productResult.data ?? []) as Product[])
-    setFinalQty(Object.fromEntries(rows.map((row) => [row.id, String(row.stock)])))
-    setLoading(false)
+    setRefreshing(true)
+    try {
+      const [stockResult, productResult] = await Promise.all([
+        supabase.from('product_stock').select('product_id, name, unit, stock').order('name'),
+        supabase.from('products').select('id, name, unit').eq('active', true).order('name'),
+      ])
+      if (stockResult.error || productResult.error) {
+        setError(stockResult.error?.message ?? productResult.error?.message ?? 'No se pudo cargar el stock.')
+        return
+      }
+      const nextRows = (stockResult.data ?? []).map((row) => ({ id: row.product_id as string, name: row.name, unit: row.unit, stock: Number(row.stock) }))
+      setStock(nextRows)
+      setProducts((productResult.data ?? []) as Product[])
+      setFinalQty((previous) => {
+        const next = { ...previous }
+        for (const row of nextRows) {
+          if (!dirtyFinalIds.current.has(row.id)) next[row.id] = String(row.stock)
+        }
+        return next
+      })
+      setError('')
+      setLastUpdated(new Date())
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
   }, [supabase])
 
   useEffect(() => { supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null)); void fetchAll() }, [supabase, fetchAll])
+
+  // El movimiento queda visible de inmediato por Realtime. El intervalo y los
+  // eventos de foco son respaldo si Realtime está deshabilitado en Supabase.
+  useEffect(() => {
+    const refresh = () => { void fetchAll() }
+    const refreshWhenVisible = () => { if (document.visibilityState === 'visible') refresh() }
+    const timer = window.setInterval(refresh, 5000)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    const channel = supabase
+      .channel('stock-live-updates')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'stock_movements' }, refresh)
+      .subscribe()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      void supabase.removeChannel(channel)
+    }
+  }, [supabase, fetchAll])
   const rows = useMemo(() => products.map((product) => ({ product, current: stock.find((row) => row.id === product.id)?.stock ?? 0 })).filter(({ product }) => product.name.toLocaleLowerCase('es-AR').includes(search.toLocaleLowerCase('es-AR'))), [products, stock, search])
 
   const saveFinal = async (product: Product, current: number) => {
     const target = parseQty(finalQty[product.id] ?? '')
     if (!Number.isFinite(target) || target < 0) { setError(`Ingresá una existencia final válida, igual o mayor que cero, para ${product.name}.`); return }
     const delta = target - current
-    if (delta === 0) { setMessage('La existencia final coincide con el stock actual.'); return }
+    if (delta === 0) { dirtyFinalIds.current.delete(product.id); setMessage('La existencia final coincide con el stock actual.'); return }
     setSavingId(product.id); setError('')
     const { error: insertError } = await supabase.from('stock_movements').insert({ product_id: product.id, delta, reason: 'ajuste', ref_type: 'existencia_final_manual', created_by: userId })
     setSavingId(null)
     if (insertError) { setError(`No se pudo guardar la existencia final: ${insertError.message}`); return }
+    dirtyFinalIds.current.delete(product.id)
     setMessage(`${product.name}: existencia final actualizada a ${fmtQty(target, product.unit)}.`); setLoading(true); await fetchAll()
   }
 
@@ -54,8 +97,8 @@ export default function StockPage() {
     {message && <div className="mb-4 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">{message}</div>}
     {error && <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-body text-sm">{error}</div>}
     <div className="mb-4 rounded-2xl border border-border bg-white p-4 shadow-sm flex gap-3"><AlertTriangle size={19} className="text-burgundy mt-0.5 shrink-0" /><p className="font-body text-sm text-warm-gray">No hay producción, stock base ni reposición automática. Para corregir un conteo, escribí la cantidad que realmente quedó y guardala. Para una merma o corrección puntual, usá el botón de cada producto.</p></div>
-    <div className="relative max-w-sm mb-4"><Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto por nombre..." className="w-full pl-9 pr-3 py-2.5 border border-border rounded-xl font-body text-sm focus:outline-none focus:border-burgundy bg-white" /></div>
-    {loading ? <div className="text-center py-16 text-warm-gray font-body">Cargando...</div> : <div className="bg-white rounded-2xl border border-border shadow-sm overflow-x-auto"><table className="w-full min-w-[680px]"><thead><tr className="bg-cream-dark border-b border-border"><th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Producto</th><th className="text-right px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Stock actual</th><th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Existencia final contada</th><th className="text-right px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Acciones</th></tr></thead><tbody>{rows.map(({ product, current }) => <tr key={product.id} className="border-b border-border/50 hover:bg-cream/30"><td className="px-4 py-3 font-body text-sm font-semibold text-charcoal">{product.name}</td><td className={`px-4 py-3 text-right font-num text-sm font-bold ${current < 0 ? 'text-red-600' : 'text-charcoal'}`}>{fmtQty(current, product.unit)}</td><td className="px-4 py-3"><div className="flex items-center gap-2"><input type="text" inputMode="decimal" value={finalQty[product.id] ?? ''} onChange={(event) => setFinalQty((previous) => ({ ...previous, [product.id]: event.target.value }))} className="w-28 px-3 py-2 border border-border rounded-lg font-num text-sm focus:outline-none focus:border-burgundy" /><span className="font-body text-xs text-warm-gray">{product.unit}</span></div></td><td className="px-4 py-3"><div className="flex justify-end gap-2"><button onClick={() => void saveFinal(product, current)} disabled={savingId === product.id} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-burgundy text-cream font-body text-xs font-semibold hover:bg-burgundy-dark disabled:opacity-50"><Save size={14} /> Guardar final</button><button onClick={() => setManualProduct(product)} className="px-3 py-2 rounded-lg border border-border text-warm-gray font-body text-xs font-semibold hover:text-charcoal hover:bg-cream">Merma / ajuste</button></div></td></tr>)}</tbody></table>{rows.length === 0 && <div className="text-center py-12 text-warm-gray font-body text-sm">No hay productos que coincidan con la búsqueda.</div>}</div>}
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="relative w-full max-w-sm"><Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto por nombre..." className="w-full pl-9 pr-3 py-2.5 border border-border rounded-xl font-body text-sm focus:outline-none focus:border-burgundy bg-white" /></div><div className="flex items-center gap-3"><span className="font-body text-xs text-warm-gray">{lastUpdated ? `Actualizado ${lastUpdated.toLocaleTimeString('es-AR')}` : 'Sin actualizar'}</span><button onClick={() => void fetchAll()} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border bg-white text-warm-gray font-body text-xs font-semibold hover:text-charcoal disabled:opacity-50"><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> Actualizar</button></div></div>
+    {loading ? <div className="text-center py-16 text-warm-gray font-body">Cargando...</div> : <div className="bg-white rounded-2xl border border-border shadow-sm overflow-x-auto"><table className="w-full min-w-[680px]"><thead><tr className="bg-cream-dark border-b border-border"><th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Producto</th><th className="text-right px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Stock actual</th><th className="text-left px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Existencia final contada</th><th className="text-right px-4 py-3 font-body text-xs text-warm-gray uppercase tracking-wide">Acciones</th></tr></thead><tbody>{rows.map(({ product, current }) => <tr key={product.id} className="border-b border-border/50 hover:bg-cream/30"><td className="px-4 py-3 font-body text-sm font-semibold text-charcoal">{product.name}</td><td className={`px-4 py-3 text-right font-num text-sm font-bold ${current < 0 ? 'text-red-600' : 'text-charcoal'}`}>{fmtQty(current, product.unit)}</td><td className="px-4 py-3"><div className="flex items-center gap-2"><input type="text" inputMode="decimal" value={finalQty[product.id] ?? ''} onChange={(event) => { dirtyFinalIds.current.add(product.id); setFinalQty((previous) => ({ ...previous, [product.id]: event.target.value })) }} className="w-28 px-3 py-2 border border-border rounded-lg font-num text-sm focus:outline-none focus:border-burgundy" /><span className="font-body text-xs text-warm-gray">{product.unit}</span></div></td><td className="px-4 py-3"><div className="flex justify-end gap-2"><button onClick={() => void saveFinal(product, current)} disabled={savingId === product.id} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-burgundy text-cream font-body text-xs font-semibold hover:bg-burgundy-dark disabled:opacity-50"><Save size={14} /> Guardar final</button><button onClick={() => setManualProduct(product)} className="px-3 py-2 rounded-lg border border-border text-warm-gray font-body text-xs font-semibold hover:text-charcoal hover:bg-cream">Merma / ajuste</button></div></td></tr>)}</tbody></table>{rows.length === 0 && <div className="text-center py-12 text-warm-gray font-body text-sm">No hay productos que coincidan con la búsqueda.</div>}</div>}
     {manualProduct && <ManualModal supabase={supabase} userId={userId} product={manualProduct} onClose={() => setManualProduct(null)} onSaved={async (text) => { setManualProduct(null); setMessage(text); setLoading(true); await fetchAll() }} />}
   </div>
 }

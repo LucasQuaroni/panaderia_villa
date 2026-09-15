@@ -18,7 +18,7 @@ import {
   X, DoorOpen, DoorClosed, CheckCircle2, CircleDollarSign, RotateCcw, Star, Cable,
   Banknote, ArrowLeft, Coins, AlertTriangle, Utensils,
 } from 'lucide-react'
-import { addPending, removePending, pendingCount, updatePendingPayment, type PendingSale } from '@/lib/pos/queue'
+import { removePending, pendingCount, updatePendingPayment, type PendingSale } from '@/lib/pos/queue'
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
 import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
@@ -108,6 +108,10 @@ export default function PosPage() {
   // El destino del pesaje queda fijado al abrir el modal. La lectura de la
   // balanza sigue siendo global y no depende de los cambios de carrito.
   const weighingCartRef = useRef<CartIndex>(0)
+  // También fijamos el carrito al abrir el selector por unidad. Así, aunque el
+  // render cambie mientras el modal está abierto, el producto llega al pedido
+  // que inició la operación.
+  const unitSelectingCartRef = useRef<CartIndex>(0)
 
   // Modales
   const [weighing, setWeighing] = useState<Product | null>(null)
@@ -120,6 +124,8 @@ export default function PosPage() {
   const [flash, setFlash] = useState('')
   const [cashError, setCashError] = useState('')
   const [openingCash, setOpeningCash] = useState(false)
+  const [saleError, setSaleError] = useState('')
+  const [charging, setCharging] = useState(false)
   const [lastSale, setLastSale] = useState<
     { client_uuid: string; total: number; grossTotal: number; method: string; change: number | null } | null
   >(null)
@@ -265,24 +271,24 @@ export default function PosPage() {
     return map
   }, [cart])
 
-  const addUnitProduct = useCallback((p: Product, option: SaleOption | null) => {
+  const addUnitProduct = useCallback((p: Product, option: SaleOption | null, targetCart: CartIndex) => {
     const unitPrice = roundUpTo100(Number(p.price ?? 0))
     const amount = option?.quantity ?? 1
     const presentation = option?.label ?? p.unit
     const presentationPrice = roundUpTo100(Number(option?.price) > 0 ? Number(option?.price) : unitPrice * amount)
-    setCart(prev => {
-      const existing = prev.find(i => i.product_id === p.id && i.unit === presentation)
+    setCarts(previous => updateCartAt(previous, targetCart, current => {
+      const existing = current.find(i => i.product_id === p.id && i.unit === presentation)
       if (existing) {
-        return prev.map(i => i === existing
+        return current.map(i => i === existing
           ? { ...i, quantity: i.quantity + 1, subtotal: roundUpTo100((i.quantity + 1) * i.unit_price) }
           : i)
       }
-      return [...prev, {
+      return [...current, {
         key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: presentation,
         unit_price: presentationPrice, quantity: 1, subtotal: presentationPrice,
         stockFactor: amount,
       }]
-    })
+    }))
   }, [])
 
   const handleProductClick = useCallback((p: Product) => {
@@ -290,16 +296,17 @@ export default function PosPage() {
       weighingCartRef.current = activeCartIndex
       setWeighing(p)
     } else if (saleOptionsFor(p).length > 0) {
+      unitSelectingCartRef.current = activeCartIndex
       setUnitSelecting(p)
     } else {
-      addUnitProduct(p, null)
+      addUnitProduct(p, null, activeCartIndex)
       setSearch('')
       focusSearch()
     }
   }, [activeCartIndex, addUnitProduct, focusSearch])
 
   const addUnitSelection = (p: Product, option: SaleOption) => {
-    addUnitProduct(p, option)
+    addUnitProduct(p, option, unitSelectingCartRef.current)
     setUnitSelecting(null)
     setSearch('')
     focusSearch()
@@ -435,8 +442,14 @@ export default function PosPage() {
 
   // ── Cobrar ────────────────────────────────────────────────
   const charge = async (method: string, change: number | null) => {
+    if (charging) return
     const chargeableItems = cart.filter(i => Number.isFinite(i.quantity) && i.quantity > 0)
     if (chargeableItems.length === 0 || !session) return
+    setSaleError('')
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setSaleError('No hay conexión. La venta no se registró y el carrito se conserva completo.')
+      return
+    }
     const sale: PendingSale = {
       client_uuid: crypto.randomUUID(),
       cash_session_id: session.id,
@@ -454,13 +467,29 @@ export default function PosPage() {
     }
     const grossTotal = sale.items.reduce((s, x) => s + x.subtotal, 0)
     const saleTotal = method === 'Consumo interno' ? 0 : grossTotal
-    addPending(sale)          // 1) guardado local inmediato (nunca se pierde)
-    refreshPending()
-    clearCart()
-    setPayOpen(false)
-    setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, grossTotal, method, change })
-    focusSearch()
-    trySync()                 // 2) intento de sincronización
+    setCharging(true)
+    try {
+      // register_sale es una única transacción en la base: crea la venta, sus
+      // ítems y los movimientos de stock. Sólo vaciamos el carrito cuando toda
+      // la operación quedó confirmada.
+      const { error } = await supabase.rpc('register_sale', {
+        p_client_uuid: sale.client_uuid,
+        p_cash_session_id: sale.cash_session_id,
+        p_payment_method: sale.payment_method,
+        p_items: sale.items,
+      })
+      if (error) throw error
+      clearCart()
+      setPayOpen(false)
+      setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, grossTotal, method, change })
+      refreshPending()
+      focusSearch()
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Error desconocido'
+      setSaleError(`No se pudo registrar la venta ni descontar el stock (${detail}). El carrito se conserva; reintentá.`)
+    } finally {
+      setCharging(false)
+    }
   }
 
   const changeLastSalePayment = async (method: string) => {
@@ -749,7 +778,7 @@ export default function PosPage() {
                     </div>
                     {isActive ? (
                       <button
-                        onClick={() => setPayOpen(true)}
+                        onClick={() => { setSaleError(''); setPayOpen(true) }}
                         disabled={!panelCart.some(item => Number.isFinite(item.quantity) && item.quantity > 0)}
                         className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors"
                       >
@@ -793,7 +822,14 @@ export default function PosPage() {
       {payOpen && (
         <PayModal
           total={total}
-          onCancel={() => { setPayOpen(false); focusSearch() }}
+          error={saleError}
+          charging={charging}
+          onCancel={() => {
+            if (charging) return
+            setPayOpen(false)
+            setSaleError('')
+            focusSearch()
+          }}
           onCharge={charge}
         />
       )}
@@ -1114,11 +1150,13 @@ function WeighModal({
 
 /** El medio se elige primero y siempre se confirma en un segundo paso. */
 function PayModal({
-  total, onCancel, onCharge,
+  total, error, charging, onCancel, onCharge,
 }: {
   total: number
+  error: string
+  charging: boolean
   onCancel: () => void
-  onCharge: (method: string, change: number | null) => void
+  onCharge: (method: string, change: number | null) => Promise<void>
 }) {
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [paidWith, setPaidWith] = useState('')
@@ -1141,17 +1179,23 @@ function PayModal({
   useEffect(() => { if (selectedMethod === 'Efectivo') cashRef.current?.focus() }, [selectedMethod])
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => { if (!charging) onCancel() }}>
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b border-border">
           <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2">
             {selectedMethod && (
-              <button onClick={() => setSelectedMethod(null)} className="text-warm-gray hover:text-charcoal"><ArrowLeft size={18} /></button>
+              <button onClick={() => setSelectedMethod(null)} disabled={charging} className="text-warm-gray hover:text-charcoal disabled:opacity-40"><ArrowLeft size={18} /></button>
             )}
             Cobrar <span className="font-num">{fmtARS(total)}</span>
           </h2>
-          <button onClick={onCancel} className="text-warm-gray hover:text-charcoal"><X size={20} /></button>
+          <button onClick={onCancel} disabled={charging} className="text-warm-gray hover:text-charcoal disabled:opacity-40"><X size={20} /></button>
         </div>
+
+        {error && (
+          <div className="mx-5 mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 font-body text-sm text-red-700">
+            {error}
+          </div>
+        )}
 
         {!selectedMethod ? (
           <div className="p-5">
@@ -1216,9 +1260,9 @@ function PayModal({
 
             <button
               onClick={() => onCharge('Efectivo', paidOk ? Math.max(0, Math.round(change)) : null)}
-              disabled={paidOk && !alcanza}
+              disabled={charging || (paidOk && !alcanza)}
               className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
-              <CircleDollarSign size={20} /> Cobrar en efectivo
+              <CircleDollarSign size={20} /> {charging ? 'Registrando venta...' : 'Cobrar en efectivo'}
             </button>
             <p className="font-body text-[11px] text-warm-gray text-center">
               Podés cobrar sin cargar con cuánto paga: el vuelto es sólo una ayuda.
@@ -1235,11 +1279,11 @@ function PayModal({
                   : 'Confirmá recién cuando la transferencia esté realizada. Podés volver y elegir otro medio.'}
               </p>
             </div>
-            <button onClick={() => onCharge(selectedMethod, null)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark transition-colors">
-              <CircleDollarSign size={20} /> {selectedMethod === 'Consumo interno' ? 'Registrar consumo' : 'Confirmar transferencia'}
+            <button onClick={() => onCharge(selectedMethod, null)} disabled={charging}
+              className="w-full flex items-center justify-center gap-2 px-4 py-4 bg-burgundy text-cream rounded-xl font-body text-base font-bold hover:bg-burgundy-dark disabled:opacity-40 transition-colors">
+              <CircleDollarSign size={20} /> {charging ? 'Registrando venta...' : selectedMethod === 'Consumo interno' ? 'Registrar consumo' : 'Confirmar transferencia'}
             </button>
-            <button onClick={() => setSelectedMethod(null)} className="font-body text-sm text-warm-gray hover:text-charcoal">
+            <button onClick={() => setSelectedMethod(null)} disabled={charging} className="font-body text-sm text-warm-gray hover:text-charcoal disabled:opacity-40">
               Cambiar medio de pago
             </button>
           </div>
