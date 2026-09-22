@@ -18,6 +18,9 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
    y cajero. Requiere la `006`.
 7. **`008_visibilidad_mostrador.sql`** — agrega la visibilidad de productos en
    mostrador. Ejecutarla después de la `007`.
+8. **`009_stock_consistencia.sql`** — hace atómico el guardado de existencia
+   final frente a ventas simultáneas. Ejecutarla después de la `008` y antes
+   de desplegar la pantalla de Stock que usa `set_product_stock`.
 
 La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
 existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.
