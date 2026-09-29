@@ -21,6 +21,11 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
 8. **`009_stock_consistencia.sql`** — hace atómico el guardado de existencia
    final frente a ventas simultáneas. Ejecutarla después de la `008` y antes
    de desplegar la pantalla de Stock que usa `set_product_stock`.
+9. **`010_fiados_y_atencion.sql`** — agrega clientes y cobros de fiados
+   minoristas, deja los fiados fuera del cierre de caja y permite que el
+   personal de atención dé de alta clientes mayoristas y registre cobros de
+   sus cuentas. Ejecutarla después de la `009` y antes de desplegar las
+   pantallas que usan fiados.
 
 La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
 existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.
@@ -63,8 +68,9 @@ on conflict (user_id) do update set role = 'cashier';
 
 - **Como admin:** entrás al panel y ves todas las secciones (Productos, Contenido,
   Mensajes, Pedidos, Calculadora de Costos).
-- **Como cajero:** entrás y solo ves el Dashboard; si intentás abrir
-  `/admin/costs` a mano, te devuelve al Dashboard. No puede ver costos ni recetas.
+- **Como atención:** ves los mostradores minorista y mayorista y la lista de
+  fiados. Podés crear clientes mayoristas y registrar cobros de sus cuentas.
+  No podés editar comercios existentes ni ver costos, recetas o precios mayoristas.
 - **Imágenes:** al editar un producto y subir una foto nueva, se guarda en Storage
   (el enlace empieza con `https://<tu-proyecto>.supabase.co/...`), ya no en base64.
 
@@ -94,6 +100,11 @@ Después de correr `004`:
    El enlace discreto **Consumo interno** descuenta stock y registra $0 de ingreso.
 6. Al final del día, **Cerrar caja** muestra el total por medio de pago, el
    efectivo esperado vs. lo contado, y la diferencia.
+
+Los **fiados** se registran con un cliente, descuentan stock y quedan fuera
+del cierre de caja. Cuando el cliente paga, buscá su nombre en **Fiados** y
+registrá el cobro total o parcial. Los cobros en efectivo se suman a la caja
+del turno en que se reciben.
 
 ### Modo offline
 

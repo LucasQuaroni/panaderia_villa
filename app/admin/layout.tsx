@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import AdminShell from '@/components/admin/AdminShell'
 import ServiceWorkerRegister from '@/components/admin/ServiceWorkerRegister'
 import { getUserRole } from '@/lib/auth/roles'
+import { ScaleProvider } from '@/hooks/use-scale'
 
 export const metadata = {
   title: 'Admin — Panadería Villa',
@@ -21,7 +22,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <>
       <ServiceWorkerRegister />
-      <AdminShell role={role}>{children}</AdminShell>
+      <ScaleProvider><AdminShell role={role}>{children}</AdminShell></ScaleProvider>
     </>
   )
 }

@@ -24,6 +24,7 @@ interface Sale {
   items: SaleItem[]
   sale_channel?: 'minorista' | 'mayorista'
   wholesale_customer?: { business_name: string } | null
+  retail_customer?: { name: string } | null
 }
 interface AccountPayment {
   id: string
@@ -32,6 +33,7 @@ interface AccountPayment {
   received_at: string
   customer?: { business_name: string } | null
 }
+interface RetailPayment extends Omit<AccountPayment, 'customer'> { customer?: { name: string } | null }
 
 const todayStr = () => {
   const d = new Date()
@@ -49,6 +51,7 @@ export default function VentasPage() {
   const [method, setMethod] = useState('Todos')
   const [sales, setSales] = useState<Sale[]>([])
   const [accountPayments, setAccountPayments] = useState<AccountPayment[]>([])
+  const [retailPayments, setRetailPayments] = useState<RetailPayment[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -61,10 +64,10 @@ export default function VentasPage() {
     const start = new Date(day + 'T00:00:00')
     const end = new Date(day + 'T00:00:00')
     end.setDate(end.getDate() + 1)
-    const [salesResult, paymentsResult] = await Promise.all([
+    const [salesResult, paymentsResult, retailPaymentsResult] = await Promise.all([
       supabase
         .from('sales')
-        .select('id, sold_at, payment_method, total, sale_channel, wholesale_customer:wholesale_customers(business_name), items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
+        .select('id, sold_at, payment_method, total, sale_channel, wholesale_customer:wholesale_customers(business_name), retail_customer:retail_customers(name), items:sale_items(id, description, unit, quantity, stock_quantity, unit_price, subtotal)')
         .gte('sold_at', start.toISOString())
         .lt('sold_at', end.toISOString())
         .order('sold_at', { ascending: false }),
@@ -74,15 +77,22 @@ export default function VentasPage() {
         .gte('received_at', start.toISOString())
         .lt('received_at', end.toISOString())
         .order('received_at', { ascending: false }),
+      supabase
+        .from('retail_account_payments')
+        .select('id, amount, payment_method, received_at, customer:retail_customers(name)')
+        .gte('received_at', start.toISOString())
+        .lt('received_at', end.toISOString())
+        .order('received_at', { ascending: false }),
     ])
-    if (salesResult.error || paymentsResult.error) {
-      setError(salesResult.error?.message ?? paymentsResult.error?.message ?? 'No se pudieron actualizar las ventas.')
+    if (salesResult.error || paymentsResult.error || retailPaymentsResult.error) {
+      setError(salesResult.error?.message ?? paymentsResult.error?.message ?? retailPaymentsResult.error?.message ?? 'No se pudieron actualizar las ventas.')
     } else {
       setSales(((salesResult.data ?? []) as unknown as Sale[]).map((sale) => ({
         ...sale,
         items: sale.items.filter((item) => !item.description.startsWith('__MAYORISTA__:')),
       })))
       setAccountPayments((paymentsResult.data ?? []) as unknown as AccountPayment[])
+      setRetailPayments((retailPaymentsResult.data ?? []) as unknown as RetailPayment[])
       setError('')
       setLastUpdated(new Date())
     }
@@ -104,6 +114,7 @@ export default function VentasPage() {
       .channel('sales-live-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wholesale_account_payments' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'retail_account_payments' }, refresh)
       .subscribe()
     return () => {
       window.clearInterval(timer)
@@ -229,7 +240,7 @@ export default function VentasPage() {
                     {open ? <ChevronDown size={16} className="text-warm-gray" /> : <ChevronRight size={16} className="text-warm-gray" />}
                     <div>
                       <div className="font-body text-sm font-semibold text-charcoal">{fmtTime(s.sold_at)} hs</div>
-                      <div className="font-body text-xs text-warm-gray flex gap-1.5 items-center">{s.items.length} ítem(s) · {s.payment_method ?? '—'} {s.sale_channel === 'mayorista' && <span className="px-1.5 py-0.5 rounded bg-burgundy/10 text-burgundy font-semibold">Mayorista{s.wholesale_customer?.business_name ? ` · ${s.wholesale_customer.business_name}` : ''}</span>}</div>
+                      <div className="font-body text-xs text-warm-gray flex gap-1.5 items-center">{s.items.length} ítem(s) · {s.payment_method ?? '—'} {s.sale_channel === 'mayorista' && <span className="px-1.5 py-0.5 rounded bg-burgundy/10 text-burgundy font-semibold">Mayorista{s.wholesale_customer?.business_name ? ` · ${s.wholesale_customer.business_name}` : ''}</span>}{s.payment_method === 'Fiado' && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">{s.retail_customer?.name ?? 'Cliente sin nombre'}</span>}</div>
                     </div>
                   </div>
                   <span className="font-num text-base font-bold text-burgundy">{fmt(Number(s.total))}</span>
@@ -277,6 +288,9 @@ export default function VentasPage() {
           ))}
         </div>
       )}
+      <h3 className="font-sans font-bold text-charcoal mt-7 mb-3 flex items-center gap-2"><CircleDollarSign size={18} /> Cobros de fiados ({retailPayments.length})</h3>
+      {loading ? null : retailPayments.length === 0 ? <p className="text-sm text-warm-gray">No hubo cobros de fiados este día.</p> :
+        <div className="flex flex-col gap-2">{retailPayments.map(payment => <div key={payment.id} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-white px-4 py-3 shadow-sm"><div><div className="font-body text-sm font-semibold text-charcoal">{payment.customer?.name ?? 'Cliente'}</div><div className="font-body text-xs text-warm-gray">{fmtTime(payment.received_at)} hs · {payment.payment_method}</div></div><span className="font-num text-base font-bold text-green-700">{fmt(Number(payment.amount))}</span></div>)}</div>}
     </div>
   )
 }

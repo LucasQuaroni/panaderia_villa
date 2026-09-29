@@ -16,7 +16,8 @@
  * Recién ahí el mostrador lo toma solo.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { usePathname } from 'next/navigation'
 import {
   startScale, isScaleSupported,
   type ScaleController, type ScaleProtocol,
@@ -57,7 +58,8 @@ export interface ScaleState {
   clearTare: () => void
 }
 
-export function useScale(): ScaleState {
+function useScaleController(): ScaleState {
+  const pathname = usePathname()
   const [supported, setSupported] = useState(false)
   const [connected, setConnected] = useState(false)
   const [protocol, setProtocol] = useState<ScaleProtocol | null>(null)
@@ -68,6 +70,7 @@ export function useScale(): ScaleState {
 
   const ctrlRef = useRef<ScaleController | null>(null)
   const connectingRef = useRef(false)
+  const generationRef = useRef(0)
 
   // Refs para el cálculo de estabilidad (no queremos re-render por cada trama).
   const lastValueRef = useRef<number | null>(null)
@@ -90,6 +93,7 @@ export function useScale(): ScaleState {
   const connect = useCallback(async (reuse = false) => {
     if (ctrlRef.current || connectingRef.current) return true
     connectingRef.current = true
+    const generation = generationRef.current
     try {
       const ctrl = await startScale({
         reusePort: reuse,
@@ -131,6 +135,10 @@ export function useScale(): ScaleState {
         },
         onProtocol: setProtocol,
       })
+      if (generation !== generationRef.current) {
+        await ctrl?.stop()
+        return false
+      }
       ctrlRef.current = ctrl
       return ctrl !== null
     } finally {
@@ -139,6 +147,7 @@ export function useScale(): ScaleState {
   }, [resetReadings])
 
   const disconnect = useCallback(async () => {
+    generationRef.current += 1
     const ctrl = ctrlRef.current
     ctrlRef.current = null
     await ctrl?.stop()
@@ -146,23 +155,26 @@ export function useScale(): ScaleState {
     setProtocol(null)
   }, [resetReadings])
 
-  // Soporte + autoconexión silenciosa si el puerto ya fue autorizado antes.
+  // El diagnóstico usa el puerto directamente y necesita que lo liberemos.
   useEffect(() => {
     const ok = isScaleSupported()
     setSupported(ok)
-    if (ok) connect(true)
-    return () => { ctrlRef.current?.stop(); ctrlRef.current = null }
-  }, [connect])
+    return () => { generationRef.current += 1; ctrlRef.current?.stop(); ctrlRef.current = null }
+  }, [])
+  useEffect(() => {
+    if (pathname === '/admin/pos/balanza') void disconnect()
+    else if (isScaleSupported()) void connect(true)
+  }, [pathname, connect, disconnect])
 
   // Si vuelven a enchufar el adaptador USB, reconectamos solos.
   useEffect(() => {
     if (typeof navigator === 'undefined') return
     const serial = (navigator as unknown as { serial?: EventTarget }).serial
     if (!serial) return
-    const onPlug = () => { if (!ctrlRef.current) connect(true) }
+    const onPlug = () => { if (pathname !== '/admin/pos/balanza' && !ctrlRef.current) connect(true) }
     serial.addEventListener('connect', onPlug)
     return () => serial.removeEventListener('connect', onPlug)
-  }, [connect])
+  }, [connect, pathname])
 
   // Vigilancia: si dejan de llegar tramas, la lectura vence (no mostramos
   // un peso viejo como si fuera el actual).
@@ -190,4 +202,18 @@ export function useScale(): ScaleState {
     stable: stable && live, hasLoad, tare,
     connect, disconnect, applyTare, clearTare,
   }
+}
+
+const ScaleContext = createContext<ScaleState | null>(null)
+
+/** La conexión vive en el layout: cambiar de mostrador no cierra el puerto. */
+export function ScaleProvider({ children }: { children: ReactNode }) {
+  const scale = useScaleController()
+  return createElement(ScaleContext.Provider, { value: scale }, children)
+}
+
+export function useScale(): ScaleState {
+  const scale = useContext(ScaleContext)
+  if (!scale) throw new Error('La balanza requiere ScaleProvider')
+  return scale
 }

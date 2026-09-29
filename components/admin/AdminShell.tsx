@@ -35,6 +35,7 @@ const navSections = [
     items: [
       { href: '/admin/pos', label: 'Mostrador minorista', icon: ShoppingCart, adminOnly: false },
       { href: '/admin/wholesale', label: 'Mostrador mayorista', icon: Store, adminOnly: false },
+      { href: '/admin/fiados', label: 'Fiados', icon: Wallet, adminOnly: false },
       { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: true },
       { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
       { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },

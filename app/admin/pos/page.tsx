@@ -25,6 +25,7 @@ import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
 import { roundUpTo100 } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
 import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
+import { cartDraftKey, readCartDraft, saveCartDraft } from '@/lib/pos/cart-drafts'
 
 interface SaleOption {
   label: string
@@ -96,6 +97,7 @@ export default function PosPage() {
   // Dos pedidos independientes. Sólo el carrito elegido recibe productos y se cobra.
   const [carts, setCarts] = useState<[CartItem[], CartItem[]]>([[], []])
   const [activeCartIndex, setActiveCartIndex] = useState<0 | 1>(0)
+  const [draftOwner, setDraftOwner] = useState<string | null>(null)
   const [quantityDrafts, setQuantityDrafts] = useState<Record<string, string>>({})
   const [session, setSession] = useState<CashSession | null>(null)
   const [openingFloat, setOpeningFloat] = useState(3000)
@@ -133,6 +135,20 @@ export default function PosPage() {
   const searchRef = useRef<HTMLInputElement>(null)
 
   const cart = carts[activeCartIndex]
+  useEffect(() => {
+    if (!userId) return
+    const draft = readCartDraft<CartItem[]>(cartDraftKey('minorista', userId))
+    if (draft && draft.carts.every(items => Array.isArray(items) && items.every(item =>
+      typeof item.key === 'string' && typeof item.name === 'string' && Number.isFinite(item.quantity)))) {
+      setCarts(draft.carts)
+      setActiveCartIndex(draft.active)
+    }
+    setDraftOwner(userId)
+  }, [userId])
+  useEffect(() => {
+    if (!userId || draftOwner !== userId) return
+    saveCartDraft(cartDraftKey('minorista', userId), carts, activeCartIndex)
+  }, [userId, draftOwner, carts, activeCartIndex])
   const setCart = useCallback((updater: CartItem[] | ((current: CartItem[]) => CartItem[])) => {
     setCarts(previous => {
       const next = typeof updater === 'function' ? updater(previous[activeCartIndex]) : updater
@@ -155,7 +171,8 @@ export default function PosPage() {
     const init = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser()
-        setUserId(user?.id ?? null)
+        const cachedUser = user ? null : (await supabase.auth.getSession()).data.session?.user
+        setUserId(user?.id ?? cachedUser?.id ?? null)
 
         const [{ data: prods, error: prodErr }, { data: sessions }, settings] = await Promise.all([
           supabase.from('products').select('id, name, price, unit, category, featured, active, show_on_pos, sale_options').eq('active', true).eq('show_on_pos', true).order('name'),
@@ -441,7 +458,7 @@ export default function PosPage() {
   }
 
   // ── Cobrar ────────────────────────────────────────────────
-  const charge = async (method: string, change: number | null) => {
+  const charge = async (method: string, change: number | null, fiadoCustomerId?: string) => {
     if (charging) return
     const chargeableItems = cart.filter(i => Number.isFinite(i.quantity) && i.quantity > 0)
     if (chargeableItems.length === 0 || !session) return
@@ -472,12 +489,15 @@ export default function PosPage() {
       // register_sale es una única transacción en la base: crea la venta, sus
       // ítems y los movimientos de stock. Sólo vaciamos el carrito cuando toda
       // la operación quedó confirmada.
-      const { error } = await supabase.rpc('register_sale', {
-        p_client_uuid: sale.client_uuid,
-        p_cash_session_id: sale.cash_session_id,
-        p_payment_method: sale.payment_method,
-        p_items: sale.items,
-      })
+      const { error } = method === 'Fiado'
+        ? await supabase.rpc('register_fiado_sale', {
+            p_client_uuid: sale.client_uuid, p_cash_session_id: sale.cash_session_id,
+            p_customer_id: fiadoCustomerId, p_items: sale.items,
+          })
+        : await supabase.rpc('register_sale', {
+            p_client_uuid: sale.client_uuid, p_cash_session_id: sale.cash_session_id,
+            p_payment_method: sale.payment_method, p_items: sale.items,
+          })
       if (error) throw error
       clearCart()
       setPayOpen(false)
@@ -519,13 +539,11 @@ export default function PosPage() {
 
   const undoLastSale = async () => {
     if (!lastSale) return
-    removePending(lastSale.client_uuid)   // si todavía no se subió, la saca de la cola
+    const { error } = await supabase.rpc('void_sale', { p_client_uuid: lastSale.client_uuid })
+    if (error) { setSaleError(`No se pudo anular la venta: ${error.message}`); return }
+    removePending(lastSale.client_uuid)
     refreshPending()
-    try {
-      await supabase.rpc('void_sale', { p_client_uuid: lastSale.client_uuid }) // si ya se subió, la revierte
-    } catch {
-      /* si estamos offline, quedó fuera de la cola; al reconectar no se sube */
-    }
+    setSaleError('')
     setLastSale(null)
     showFlash('Última venta anulada.')
   }
@@ -586,6 +604,7 @@ export default function PosPage() {
           <CheckCircle2 size={18} /> {flash}
         </div>
       )}
+      {saleError && !payOpen && <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{saleError}</p>}
 
       {lastSale && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">
@@ -600,9 +619,9 @@ export default function PosPage() {
           <button onClick={undoLastSale} className="flex items-center gap-1 text-red-600 hover:underline font-semibold">
             <RotateCcw size={14} /> Deshacer
           </button>
-          <button onClick={() => setChangePaymentOpen(true)} className="flex items-center gap-1 text-burgundy hover:underline font-semibold">
+          {lastSale.method !== 'Fiado' && <button onClick={() => setChangePaymentOpen(true)} className="flex items-center gap-1 text-burgundy hover:underline font-semibold">
             <Banknote size={14} /> Cambiar pago
-          </button>
+          </button>}
         </div>
       )}
 
@@ -1156,11 +1175,18 @@ function PayModal({
   error: string
   charging: boolean
   onCancel: () => void
-  onCharge: (method: string, change: number | null) => Promise<void>
+  onCharge: (method: string, change: number | null, fiadoCustomerId?: string) => Promise<void>
 }) {
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [paidWith, setPaidWith] = useState('')
+  const [fiadoCustomers, setFiadoCustomers] = useState<{ id: string; name: string }[]>([])
+  const [fiadoSearch, setFiadoSearch] = useState('')
+  const [fiadoCustomerId, setFiadoCustomerId] = useState('')
+  const [newFiadoName, setNewFiadoName] = useState('')
+  const [fiadoError, setFiadoError] = useState('')
+  const [creatingFiado, setCreatingFiado] = useState(false)
   const cashRef = useRef<HTMLInputElement>(null)
+  const supabase = createClient()
 
   const paid = parseNum(paidWith)
   const paidOk = !isNaN(paid) && paid > 0
@@ -1177,6 +1203,27 @@ function PayModal({
   }, [total])
 
   useEffect(() => { if (selectedMethod === 'Efectivo') cashRef.current?.focus() }, [selectedMethod])
+  useEffect(() => {
+    if (selectedMethod !== 'Fiado') return
+    let cancelled = false
+    void supabase.from('retail_customers').select('id,name').eq('active', true).order('name').then(({ data, error: loadError }) => {
+      if (cancelled) return
+      if (loadError) setFiadoError(loadError.message)
+      else setFiadoCustomers(data ?? [])
+    })
+    return () => { cancelled = true }
+  }, [selectedMethod, supabase])
+
+  const createFiadoCustomer = async () => {
+    if (!newFiadoName.trim() || creatingFiado) return
+    setCreatingFiado(true); setFiadoError('')
+    const { data, error: insertError } = await supabase.from('retail_customers')
+      .insert({ name: newFiadoName.trim() }).select('id,name').single()
+    setCreatingFiado(false)
+    if (insertError || !data) { setFiadoError(insertError?.message ?? 'No se pudo crear el cliente.'); return }
+    setFiadoCustomers(previous => [...previous, data].sort((a, b) => a.name.localeCompare(b.name, 'es-AR')))
+    setFiadoCustomerId(data.id); setNewFiadoName(''); setFiadoSearch(data.name)
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => { if (!charging) onCancel() }}>
@@ -1214,11 +1261,27 @@ function PayModal({
                 </button>
               ))}
             </div>
+            <button onClick={() => setSelectedMethod('Fiado')}
+              className="mt-3 w-full px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream">
+              Fiado · a cuenta del cliente
+            </button>
             <button onClick={() => setSelectedMethod('Consumo interno')}
               className="mt-5 mx-auto flex items-center gap-1.5 px-2 py-1 text-warm-gray/70 hover:text-burgundy font-body text-[11px] transition-colors"
               title="Registra la salida de stock sin sumar dinero a la caja">
               <Utensils size={13} /> Consumo interno
             </button>
+          </div>
+        ) : selectedMethod === 'Fiado' ? (
+          <div className="p-5 flex flex-col gap-3">
+            <p className="text-sm text-warm-gray">La venta descuenta stock y suma {fmtARS(total)} a la cuenta del cliente. No entra dinero en este cierre de caja.</p>
+            <input value={fiadoSearch} onChange={event => { setFiadoSearch(event.target.value); setFiadoCustomerId('') }} placeholder="Buscar cliente por nombre" className="w-full p-3 border border-border rounded-lg" />
+            <div className="max-h-36 overflow-y-auto border border-border rounded-lg divide-y">
+              {fiadoCustomers.filter(customer => customer.name.toLocaleLowerCase('es-AR').includes(fiadoSearch.toLocaleLowerCase('es-AR'))).map(customer =>
+                <button key={customer.id} onClick={() => { setFiadoCustomerId(customer.id); setFiadoSearch(customer.name) }} className={`block w-full text-left p-2 text-sm ${fiadoCustomerId === customer.id ? 'bg-burgundy/10 font-bold' : ''}`}>{customer.name}</button>)}
+            </div>
+            <div className="pt-2 border-t border-border"><p className="text-xs text-warm-gray mb-2">¿No aparece? Agregalo acá.</p><div className="flex gap-2"><input value={newFiadoName} onChange={event => setNewFiadoName(event.target.value)} placeholder="Nombre nuevo" className="min-w-0 flex-1 p-2 border border-border rounded-lg"/><button onClick={() => void createFiadoCustomer()} disabled={creatingFiado || !newFiadoName.trim()} className="px-3 rounded-lg border border-burgundy text-burgundy disabled:opacity-40">Agregar</button></div></div>
+            {fiadoError && <p className="text-red-700 text-sm">{fiadoError}</p>}
+            <button onClick={() => onCharge('Fiado', null, fiadoCustomerId)} disabled={charging || !fiadoCustomerId} className="w-full px-4 py-4 bg-burgundy text-cream rounded-xl font-semibold disabled:opacity-40">{charging ? 'Registrando...' : `Registrar fiado de ${fmtARS(total)}`}</button>
           </div>
         ) : selectedMethod === 'Efectivo' ? (
           <div className="p-5 flex flex-col gap-4">
@@ -1402,23 +1465,25 @@ function CloseCajaModal({
   useEffect(() => {
     const load = async () => {
       await syncFirst() // subir pendientes antes de calcular
-      const [{ data: salesData }, { data: itemsData }, { data: accountPaymentsData }] = await Promise.all([
+      const [{ data: salesData }, { data: itemsData }, { data: accountPaymentsData }, { data: retailPaymentsData }] = await Promise.all([
         supabase.from('sales').select('id, total, payment_method').eq('cash_session_id', session.id),
         supabase.from('sale_items').select('description, quantity, stock_quantity, sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
         supabase.from('wholesale_account_payments').select('amount, payment_method').eq('cash_session_id', session.id),
+        supabase.from('retail_account_payments').select('amount, payment_method').eq('cash_session_id', session.id),
       ])
       const rows = salesData ?? []
       const map: Record<string, number> = {}
       for (const r of rows) map[r.payment_method ?? '—'] = (map[r.payment_method ?? '—'] ?? 0) + Number(r.total)
       setByMethod(map)
       const paymentMap: Record<string, number> = {}
-      for (const payment of accountPaymentsData ?? []) {
+      for (const payment of [...(accountPaymentsData ?? []), ...(retailPaymentsData ?? [])]) {
         paymentMap[payment.payment_method] = (paymentMap[payment.payment_method] ?? 0) + Number(payment.amount)
       }
       setAccountPaymentsByMethod(paymentMap)
-      setCount(rows.length)
-      const sum = rows.reduce((s, r) => s + Number(r.total), 0)
-      setTicketAvg(rows.length ? sum / rows.length : 0)
+      const paidSales = rows.filter(row => row.payment_method !== 'Fiado')
+      setCount(paidSales.length)
+      const sum = paidSales.reduce((s, r) => s + Number(r.total), 0)
+      setTicketAvg(paidSales.length ? sum / paidSales.length : 0)
 
       // Producto más vendido (por cantidad).
       const qtyByProduct: Record<string, number> = {}
@@ -1434,7 +1499,7 @@ function CloseCajaModal({
     load()
   }, [supabase, session.id, syncFirst])
 
-  const totalSales = Object.values(byMethod).reduce((s, n) => s + n, 0)
+  const totalSales = Object.entries(byMethod).filter(([method]) => method !== 'Fiado').reduce((s, [, n]) => s + n, 0)
   const cashSales = byMethod['Efectivo'] ?? 0
   const cashAccountPayments = accountPaymentsByMethod['Efectivo'] ?? 0
   const expectedCash = session.opening_float + cashSales + cashAccountPayments
@@ -1508,9 +1573,9 @@ function CloseCajaModal({
             )}
 
             <div className="border border-border rounded-xl divide-y divide-border/60">
-              {Object.entries(byMethod).length === 0 ? (
+              {Object.entries(byMethod).filter(([method]) => method !== 'Fiado').length === 0 ? (
                 <div className="px-4 py-3 font-body text-sm text-warm-gray text-center">Sin ventas en esta caja.</div>
-              ) : Object.entries(byMethod).map(([m, v]) => (
+              ) : Object.entries(byMethod).filter(([method]) => method !== 'Fiado').map(([m, v]) => (
                 <div key={m} className="flex items-center justify-between px-4 py-2.5">
                   <span className="font-body text-sm text-charcoal">{m}</span>
                   <span className="font-num text-sm font-semibold text-charcoal">{fmt(v)}</span>
@@ -1521,10 +1586,11 @@ function CloseCajaModal({
                 <span className="font-num text-sm font-bold text-burgundy">{fmt(totalSales)}</span>
               </div>
             </div>
+            {(byMethod['Fiado'] ?? 0) > 0 && <p className="font-body text-xs text-warm-gray">Fiados registrados: {fmt(byMethod['Fiado'])}. No suman al cierre; se cobrarán después.</p>}
 
             {Object.keys(accountPaymentsByMethod).length > 0 && (
               <div className="border border-border rounded-xl divide-y divide-border/60">
-                <div className="px-4 py-2.5 bg-cream/50 font-body text-sm font-bold text-charcoal">Cobros de cuenta mayorista</div>
+                <div className="px-4 py-2.5 bg-cream/50 font-body text-sm font-bold text-charcoal">Cobros de cuentas y fiados</div>
                 {Object.entries(accountPaymentsByMethod).map(([method, amount]) => (
                   <div key={method} className="flex items-center justify-between px-4 py-2.5">
                     <span className="font-body text-sm text-charcoal">{method}</span>

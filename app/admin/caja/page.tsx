@@ -25,6 +25,7 @@ interface Row extends Session {
   cashSales: number
   transferSales: number
   accountSales: number
+  fiadoSales: number
   cashAccountPayments: number
   transferAccountPayments: number
   ticketCount: number
@@ -68,7 +69,7 @@ export default function CajaHistoryPage() {
       })
       const ids = list.map(s => s.id)
 
-      const salesBySession: Record<string, { total: number; cash: number; transfer: number; account: number; cashPayments: number; transferPayments: number; count: number }> = {}
+      const salesBySession: Record<string, { total: number; cash: number; transfer: number; account: number; fiado: number; cashPayments: number; transferPayments: number; count: number }> = {}
       if (ids.length > 0) {
         const { data: sales } = await supabase
           .from('sales')
@@ -76,18 +77,21 @@ export default function CajaHistoryPage() {
           .in('cash_session_id', ids)
         for (const s of sales ?? []) {
           const key = s.cash_session_id as string
-          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, cashPayments: 0, transferPayments: 0, count: 0 }
-          salesBySession[key].total += Number(s.total)
-          salesBySession[key].count += 1
+          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, fiado: 0, cashPayments: 0, transferPayments: 0, count: 0 }
+          if (s.payment_method === 'Fiado') salesBySession[key].fiado += Number(s.total)
+          else { salesBySession[key].total += Number(s.total); salesBySession[key].count += 1 }
           if (s.payment_method === 'Efectivo') salesBySession[key].cash += Number(s.total)
           if (s.payment_method === 'Transferencia') salesBySession[key].transfer += Number(s.total)
           if (s.payment_method === 'Cuenta corriente') salesBySession[key].account += Number(s.total)
         }
-        const { data: payments } = await supabase.from('wholesale_account_payments').select('cash_session_id, amount, payment_method').in('cash_session_id', ids)
-        for (const payment of payments ?? []) {
+        const [{ data: wholesalePayments }, { data: retailPayments }] = await Promise.all([
+          supabase.from('wholesale_account_payments').select('cash_session_id, amount, payment_method').in('cash_session_id', ids),
+          supabase.from('retail_account_payments').select('cash_session_id, amount, payment_method').in('cash_session_id', ids),
+        ])
+        for (const payment of [...(wholesalePayments ?? []), ...(retailPayments ?? [])]) {
           const key = payment.cash_session_id as string
           if (!key) continue
-          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, cashPayments: 0, transferPayments: 0, count: 0 }
+          if (!salesBySession[key]) salesBySession[key] = { total: 0, cash: 0, transfer: 0, account: 0, fiado: 0, cashPayments: 0, transferPayments: 0, count: 0 }
           if (payment.payment_method === 'Efectivo') salesBySession[key].cashPayments += Number(payment.amount)
           else salesBySession[key].transferPayments += Number(payment.amount)
         }
@@ -99,6 +103,7 @@ export default function CajaHistoryPage() {
         cashSales: salesBySession[s.id]?.cash ?? 0,
         transferSales: salesBySession[s.id]?.transfer ?? 0,
         accountSales: salesBySession[s.id]?.account ?? 0,
+        fiadoSales: salesBySession[s.id]?.fiado ?? 0,
         cashAccountPayments: salesBySession[s.id]?.cashPayments ?? 0,
         transferAccountPayments: salesBySession[s.id]?.transferPayments ?? 0,
         ticketCount: salesBySession[s.id]?.count ?? 0,
@@ -207,8 +212,8 @@ export default function CajaHistoryPage() {
                     </td>
                   </tr>
                   <tr className="border-b border-border/30 bg-cream/30 text-xs">
-                    <td colSpan={2} className="px-4 py-2 text-warm-gray">Efectivo ventas {fmt(r.cashSales)} · Transferencias {fmt(r.transferSales)} · Cuenta corriente {fmt(r.accountSales)}</td>
-                    <td colSpan={3} className="px-4 py-2 text-right text-warm-gray">Cobros de saldo: efectivo {fmt(r.cashAccountPayments)} · transferencia {fmt(r.transferAccountPayments)}</td>
+                    <td colSpan={2} className="px-4 py-2 text-warm-gray">Efectivo ventas {fmt(r.cashSales)} · Transferencias {fmt(r.transferSales)} · Cuenta corriente {fmt(r.accountSales)} · Fiados fuera de caja {fmt(r.fiadoSales)}</td>
+                    <td colSpan={3} className="px-4 py-2 text-right text-warm-gray">Cobros de cuentas y fiados: efectivo {fmt(r.cashAccountPayments)} · transferencia {fmt(r.transferAccountPayments)}</td>
                   </tr></Fragment>
                 )
               })}
