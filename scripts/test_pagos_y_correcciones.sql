@@ -10,6 +10,8 @@ create function auth.uid() returns uuid language sql stable as $$ select nullif(
 grant usage on schema public,auth to authenticated;
 grant execute on function auth.uid() to authenticated;
 alter default privileges in schema public grant all on tables to authenticated;
+-- Supabase concede EXECUTE a anon/authenticated al crear funciones.
+alter default privileges in schema public grant execute on functions to anon, authenticated;
 \ir 001_schema.sql
 \ir 002_roles_and_rls.sql
 \ir 004_ventas_stock_caja.sql
@@ -48,6 +50,9 @@ select public.test_assert((select balance=0 from public.wholesale_account_balanc
 select public.test_assert((select count(*)=2 from public.cash_movements where source='account_payment'),'ambos cobros en caja');
 select public.test_assert((select sum(amount)=20000 from public.cash_movements),'abonos y saldos sin duplicar');
 select public.test_failure($q$select public.correct_sale(gen_random_uuid(),(select id from public.sales limit 1),0,'[]','Efectivo',0,'Efectivo','Prueba de permiso',null,null)$q$,'Solo el administrador');
+select public.test_assert(not has_function_privilege('anon','public.correct_sale(uuid,uuid,integer,jsonb,text,numeric,text,text,uuid,uuid)','EXECUTE'),'anon no puede ejecutar correcciones con los permisos por defecto de Supabase');
+select public.test_assert(not has_function_privilege('anon','public.register_partial_sale(uuid,uuid,text,uuid,jsonb,numeric,text)','EXECUTE'),'anon no puede registrar abonos');
+select public.test_assert(not has_function_privilege('anon','public.close_cash_session(uuid,numeric,numeric,text,numeric)','EXECUTE'),'anon no puede cerrar caja');
 set request.jwt.claim.sub='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 select public.test_failure($q$select public.register_partial_sale(gen_random_uuid(),'22222222-2222-2222-2222-222222222222','minorista','44444444-4444-4444-4444-444444444444','[]',1,'Efectivo')$q$,'No autorizado');
 set request.jwt.claim.sub='11111111-1111-1111-1111-111111111111';

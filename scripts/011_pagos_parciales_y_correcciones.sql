@@ -128,7 +128,7 @@ begin
  end if;
  return v_sale_id;
 end $$;
-revoke all on function public.register_partial_sale(uuid,uuid,text,uuid,jsonb,numeric,text) from public;
+revoke all on function public.register_partial_sale(uuid,uuid,text,uuid,jsonb,numeric,text) from public, anon;
 grant execute on function public.register_partial_sale(uuid,uuid,text,uuid,jsonb,numeric,text) to authenticated;
 
 -- No se anulan por el atajo ventas con abonos o correcciones auditadas.
@@ -165,6 +165,8 @@ begin
  update public.stock_movements set reason=case when p_payment_method='Consumo interno' then 'consumo_interno' else 'venta' end where ref_type='sale' and ref_id=v_sale.id;
  return true;
 end $$;
+revoke all on function public.change_sale_payment_method(uuid,text) from public, anon;
+grant execute on function public.change_sale_payment_method(uuid,text) to authenticated;
 
 -- Solo administrador; guarda antes/después y mueve únicamente la diferencia.
 create or replace function public.correct_sale(
@@ -279,7 +281,7 @@ begin
  end if;
  return v_sale.revision+1;
 end $$;
-revoke all on function public.correct_sale(uuid,uuid,integer,jsonb,text,numeric,text,text,uuid,uuid) from public;
+revoke all on function public.correct_sale(uuid,uuid,integer,jsonb,text,numeric,text,text,uuid,uuid) from public, anon;
 grant execute on function public.correct_sale(uuid,uuid,integer,jsonb,text,numeric,text,text,uuid,uuid) to authenticated;
 
 -- Todos los ingresos se coordinan con el cierre de su sesión de caja.
@@ -308,7 +310,7 @@ begin
  values(p_customer_id,p_cash_session_id,p_amount,p_payment_method,auth.uid()) returning id into v_id;
  return v_id;
 end $$;
-revoke all on function public.register_retail_payment(uuid,uuid,numeric,text) from public;
+revoke all on function public.register_retail_payment(uuid,uuid,numeric,text) from public, anon;
 grant execute on function public.register_retail_payment(uuid,uuid,numeric,text) to authenticated;
 
 create or replace function public.register_wholesale_payment(p_customer_id uuid,p_cash_session_id uuid,p_amount numeric,p_payment_method text)
@@ -327,7 +329,7 @@ begin
  values(p_customer_id,p_cash_session_id,p_amount,p_payment_method,auth.uid()) returning id into v_id;
  return v_id;
 end $$;
-revoke all on function public.register_wholesale_payment(uuid,uuid,numeric,text) from public;
+revoke all on function public.register_wholesale_payment(uuid,uuid,numeric,text) from public, anon;
 grant execute on function public.register_wholesale_payment(uuid,uuid,numeric,text) to authenticated;
 
 create or replace function public.close_cash_session(p_session_id uuid,p_expected_cash numeric,p_counted_cash numeric,p_shift text,p_reserve numeric)
@@ -346,7 +348,7 @@ begin
  notes=jsonb_build_object('closing_shift',p_shift,'cash_left',p_reserve,'cash_withdrawn',greatest(0,p_counted_cash-p_reserve))::text where id=p_session_id;
  return true;
 end $$;
-revoke all on function public.close_cash_session(uuid,numeric,numeric,text,numeric) from public;
+revoke all on function public.close_cash_session(uuid,numeric,numeric,text,numeric) from public, anon;
 grant execute on function public.close_cash_session(uuid,numeric,numeric,text,numeric) to authenticated;
 -- El cierre debe pasar por la comprobación atómica anterior.
 drop policy if exists cash_sessions_update on public.cash_sessions;
