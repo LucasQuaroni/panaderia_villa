@@ -26,6 +26,8 @@ import { roundUpTo100 } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
 import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
 import { cartDraftKey, readCartDraft, saveCartDraft } from '@/lib/pos/cart-drafts'
+import { loadCashMovements, summarizeCash, type CashMovement } from '@/lib/pos/cash'
+import CashMovements from '@/components/admin/CashMovements'
 
 interface SaleOption {
   label: string
@@ -133,6 +135,8 @@ export default function PosPage() {
   >(null)
 
   const searchRef = useRef<HTMLInputElement>(null)
+  const saleAttempt = useRef<{ payload: string; id: string } | null>(null)
+  const chargeLock = useRef(false)
 
   const cart = carts[activeCartIndex]
   useEffect(() => {
@@ -458,8 +462,9 @@ export default function PosPage() {
   }
 
   // ── Cobrar ────────────────────────────────────────────────
-  const charge = async (method: string, change: number | null, fiadoCustomerId?: string) => {
-    if (charging) return
+  const charge = async (method: string, change: number | null, fiadoCustomerId?: string, partial?: { amount: number; method: string }) => {
+    if (chargeLock.current) return
+    const targetCart = activeCartIndex
     const chargeableItems = cart.filter(i => Number.isFinite(i.quantity) && i.quantity > 0)
     if (chargeableItems.length === 0 || !session) return
     setSaleError('')
@@ -484,12 +489,22 @@ export default function PosPage() {
     }
     const grossTotal = sale.items.reduce((s, x) => s + x.subtotal, 0)
     const saleTotal = method === 'Consumo interno' ? 0 : grossTotal
+    const payload = JSON.stringify({ ...sale, client_uuid: '', created_at: '', fiadoCustomerId, partial })
+    if (saleAttempt.current?.payload !== payload) saleAttempt.current = { payload, id: sale.client_uuid }
+    sale.client_uuid = saleAttempt.current.id
+    chargeLock.current = true
     setCharging(true)
     try {
       // register_sale es una única transacción en la base: crea la venta, sus
       // ítems y los movimientos de stock. Sólo vaciamos el carrito cuando toda
       // la operación quedó confirmada.
-      const { error } = method === 'Fiado'
+      const { error } = partial
+        ? await supabase.rpc('register_partial_sale', {
+            p_client_uuid: sale.client_uuid, p_cash_session_id: sale.cash_session_id,
+            p_sale_channel: 'minorista', p_customer_id: fiadoCustomerId, p_items: sale.items,
+            p_paid_amount: partial.amount, p_paid_method: partial.method,
+          })
+        : method === 'Fiado'
         ? await supabase.rpc('register_fiado_sale', {
             p_client_uuid: sale.client_uuid, p_cash_session_id: sale.cash_session_id,
             p_customer_id: fiadoCustomerId, p_items: sale.items,
@@ -499,15 +514,17 @@ export default function PosPage() {
             p_payment_method: sale.payment_method, p_items: sale.items,
           })
       if (error) throw error
-      clearCart()
+      setCarts(previous => updateCartAt(previous, targetCart, () => []))
+      saleAttempt.current = null
       setPayOpen(false)
-      setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, grossTotal, method, change })
+      setLastSale({ client_uuid: sale.client_uuid, total: saleTotal, grossTotal, method: partial ? `Abono ${fmtARS(partial.amount)} · ${partial.method} · Fiado ${fmtARS(grossTotal - partial.amount)}` : method, change })
       refreshPending()
       focusSearch()
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Error desconocido'
       setSaleError(`No se pudo registrar la venta ni descontar el stock (${detail}). El carrito se conserva; reintentá.`)
     } finally {
+      chargeLock.current = false
       setCharging(false)
     }
   }
@@ -619,7 +636,7 @@ export default function PosPage() {
           <button onClick={undoLastSale} className="flex items-center gap-1 text-red-600 hover:underline font-semibold">
             <RotateCcw size={14} /> Deshacer
           </button>
-          {lastSale.method !== 'Fiado' && <button onClick={() => setChangePaymentOpen(true)} className="flex items-center gap-1 text-burgundy hover:underline font-semibold">
+          {!lastSale.method.includes('Fiado') && <button onClick={() => setChangePaymentOpen(true)} className="flex items-center gap-1 text-burgundy hover:underline font-semibold">
             <Banknote size={14} /> Cambiar pago
           </button>}
         </div>
@@ -1175,10 +1192,14 @@ function PayModal({
   error: string
   charging: boolean
   onCancel: () => void
-  onCharge: (method: string, change: number | null, fiadoCustomerId?: string) => Promise<void>
+  onCharge: (method: string, change: number | null, fiadoCustomerId?: string, partial?: { amount: number; method: string }) => Promise<void>
 }) {
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null)
   const [paidWith, setPaidWith] = useState('')
+  const [partialAmount, setPartialAmount] = useState('')
+  const [partialMethod, setPartialMethod] = useState('Efectivo')
+  const partialValue = parseNum(partialAmount)
+  const partialValid = Number.isFinite(partialValue) && partialValue > 0 && partialValue < total && Math.abs(partialValue * 100 - Math.round(partialValue * 100)) < 0.00001
   const [fiadoCustomers, setFiadoCustomers] = useState<{ id: string; name: string }[]>([])
   const [fiadoSearch, setFiadoSearch] = useState('')
   const [fiadoCustomerId, setFiadoCustomerId] = useState('')
@@ -1204,7 +1225,7 @@ function PayModal({
 
   useEffect(() => { if (selectedMethod === 'Efectivo') cashRef.current?.focus() }, [selectedMethod])
   useEffect(() => {
-    if (selectedMethod !== 'Fiado') return
+    if (selectedMethod !== 'Fiado' && selectedMethod !== 'Pago parcial') return
     let cancelled = false
     void supabase.from('retail_customers').select('id,name').eq('active', true).order('name').then(({ data, error: loadError }) => {
       if (cancelled) return
@@ -1227,7 +1248,7 @@ function PayModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => { if (!charging) onCancel() }}>
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b border-border">
           <h2 className="font-sans text-lg font-bold text-charcoal flex items-center gap-2">
             {selectedMethod && (
@@ -1265,15 +1286,16 @@ function PayModal({
               className="mt-3 w-full px-4 py-4 rounded-xl border-2 border-burgundy/20 bg-white text-charcoal font-body text-base font-semibold hover:bg-burgundy hover:text-cream">
               Fiado · a cuenta del cliente
             </button>
+            <button onClick={() => setSelectedMethod('Pago parcial')} className="mt-3 w-full px-4 py-4 rounded-xl border-2 border-burgundy/20 font-semibold hover:bg-burgundy hover:text-cream">Abonar una parte y dejar el resto fiado</button>
             <button onClick={() => setSelectedMethod('Consumo interno')}
               className="mt-5 mx-auto flex items-center gap-1.5 px-2 py-1 text-warm-gray/70 hover:text-burgundy font-body text-[11px] transition-colors"
               title="Registra la salida de stock sin sumar dinero a la caja">
               <Utensils size={13} /> Consumo interno
             </button>
           </div>
-        ) : selectedMethod === 'Fiado' ? (
+        ) : selectedMethod === 'Fiado' || selectedMethod === 'Pago parcial' ? (
           <div className="p-5 flex flex-col gap-3">
-            <p className="text-sm text-warm-gray">La venta descuenta stock y suma {fmtARS(total)} a la cuenta del cliente. No entra dinero en este cierre de caja.</p>
+            {selectedMethod === 'Pago parcial' ? <><label className="text-sm font-semibold">Importe que paga ahora</label><input inputMode="decimal" value={partialAmount} onChange={e => setPartialAmount(e.target.value)} placeholder="0" className="w-full p-3 border rounded-lg font-num"/><select value={partialMethod} onChange={e => setPartialMethod(e.target.value)} className="w-full p-3 border rounded-lg"><option>Efectivo</option><option>Transferencia</option></select><p className="text-sm text-warm-gray">Entra a caja: {fmtARS(partialValid ? partialValue : 0)} · Queda fiado: {fmtARS(partialValid ? total - partialValue : total)}. La venta descuenta stock una sola vez.</p>{partialMethod === 'Transferencia' && <p className="text-xs text-warm-gray">Confirmá cuando la transferencia esté recibida.</p>}</> : <p className="text-sm text-warm-gray">La venta descuenta stock y suma {fmtARS(total)} a la cuenta del cliente. No entra dinero en este cierre de caja.</p>}
             <input value={fiadoSearch} onChange={event => { setFiadoSearch(event.target.value); setFiadoCustomerId('') }} placeholder="Buscar cliente por nombre" className="w-full p-3 border border-border rounded-lg" />
             <div className="max-h-36 overflow-y-auto border border-border rounded-lg divide-y">
               {fiadoCustomers.filter(customer => customer.name.toLocaleLowerCase('es-AR').includes(fiadoSearch.toLocaleLowerCase('es-AR'))).map(customer =>
@@ -1281,7 +1303,7 @@ function PayModal({
             </div>
             <div className="pt-2 border-t border-border"><p className="text-xs text-warm-gray mb-2">¿No aparece? Agregalo acá.</p><div className="flex gap-2"><input value={newFiadoName} onChange={event => setNewFiadoName(event.target.value)} placeholder="Nombre nuevo" className="min-w-0 flex-1 p-2 border border-border rounded-lg"/><button onClick={() => void createFiadoCustomer()} disabled={creatingFiado || !newFiadoName.trim()} className="px-3 rounded-lg border border-burgundy text-burgundy disabled:opacity-40">Agregar</button></div></div>
             {fiadoError && <p className="text-red-700 text-sm">{fiadoError}</p>}
-            <button onClick={() => onCharge('Fiado', null, fiadoCustomerId)} disabled={charging || !fiadoCustomerId} className="w-full px-4 py-4 bg-burgundy text-cream rounded-xl font-semibold disabled:opacity-40">{charging ? 'Registrando...' : `Registrar fiado de ${fmtARS(total)}`}</button>
+            <button onClick={() => onCharge('Fiado', null, fiadoCustomerId, selectedMethod === 'Pago parcial' ? { amount: partialValue, method: partialMethod } : undefined)} disabled={charging || !fiadoCustomerId || (selectedMethod === 'Pago parcial' && !partialValid)} className="w-full px-4 py-4 bg-burgundy text-cream rounded-xl font-semibold disabled:opacity-40">{charging ? 'Registrando...' : selectedMethod === 'Pago parcial' ? `Cobrar ${fmtARS(partialValid ? partialValue : 0)} y dejar saldo fiado` : `Registrar fiado de ${fmtARS(total)}`}</button>
           </div>
         ) : selectedMethod === 'Efectivo' ? (
           <div className="p-5 flex flex-col gap-4">
@@ -1452,8 +1474,9 @@ function CloseCajaModal({
   syncFirst: () => Promise<void>
 }) {
   const [loading, setLoading] = useState(true)
-  const [byMethod, setByMethod] = useState<Record<string, number>>({})
-  const [accountPaymentsByMethod, setAccountPaymentsByMethod] = useState<Record<string, number>>({})
+  const [movements, setMovements] = useState<CashMovement[]>([])
+  const [debt, setDebt] = useState(0)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [count, setCount] = useState(0)
   const [ticketAvg, setTicketAvg] = useState(0)
   const [topProduct, setTopProduct] = useState<string>('')
@@ -1464,26 +1487,21 @@ function CloseCajaModal({
 
   useEffect(() => {
     const load = async () => {
+      try {
       await syncFirst() // subir pendientes antes de calcular
-      const [{ data: salesData }, { data: itemsData }, { data: accountPaymentsData }, { data: retailPaymentsData }] = await Promise.all([
-        supabase.from('sales').select('id, total, payment_method').eq('cash_session_id', session.id),
-        supabase.from('sale_items').select('description, quantity, stock_quantity, sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
-        supabase.from('wholesale_account_payments').select('amount, payment_method').eq('cash_session_id', session.id),
-        supabase.from('retail_account_payments').select('amount, payment_method').eq('cash_session_id', session.id),
+      const [salesResult, itemsResult, summariesResult, cashRows] = await Promise.all([
+        supabase.from('sales').select('id,total,payment_method').eq('cash_session_id', session.id),
+        supabase.from('sale_items').select('description,quantity,stock_quantity,sales!inner(cash_session_id)').eq('sales.cash_session_id', session.id),
+        supabase.from('sale_payment_summary').select('debt_amount').eq('cash_session_id', session.id),
+        loadCashMovements(supabase, [session.id]),
       ])
-      const rows = salesData ?? []
-      const map: Record<string, number> = {}
-      for (const r of rows) map[r.payment_method ?? '—'] = (map[r.payment_method ?? '—'] ?? 0) + Number(r.total)
-      setByMethod(map)
-      const paymentMap: Record<string, number> = {}
-      for (const payment of [...(accountPaymentsData ?? []), ...(retailPaymentsData ?? [])]) {
-        paymentMap[payment.payment_method] = (paymentMap[payment.payment_method] ?? 0) + Number(payment.amount)
-      }
-      setAccountPaymentsByMethod(paymentMap)
-      const paidSales = rows.filter(row => row.payment_method !== 'Fiado')
-      setCount(paidSales.length)
-      const sum = paidSales.reduce((s, r) => s + Number(r.total), 0)
-      setTicketAvg(paidSales.length ? sum / paidSales.length : 0)
+      if (salesResult.error || itemsResult.error || summariesResult.error) throw new Error(salesResult.error?.message ?? itemsResult.error?.message ?? summariesResult.error?.message)
+      const rows = (salesResult.data ?? []).filter(row => row.payment_method !== 'Consumo interno')
+      setMovements(cashRows)
+      setDebt((summariesResult.data ?? []).reduce((sum, row) => sum + Number(row.debt_amount), 0))
+      setCount(rows.length)
+      setTicketAvg(rows.length ? rows.reduce((sum, row) => sum + Number(row.total), 0) / rows.length : 0)
+      const itemsData = itemsResult.data
 
       // Producto más vendido (por cantidad).
       const qtyByProduct: Record<string, number> = {}
@@ -1494,15 +1512,14 @@ function CloseCajaModal({
       const top = Object.entries(qtyByProduct).sort((a, b) => b[1] - a[1])[0]
       setTopProduct(top ? top[0] : '—')
 
+      } catch (failure) { setError(failure instanceof Error ? failure.message : 'No se pudo calcular la caja.'); setLoadFailed(true) }
       setLoading(false)
     }
     load()
   }, [supabase, session.id, syncFirst])
 
-  const totalSales = Object.entries(byMethod).filter(([method]) => method !== 'Fiado').reduce((s, [, n]) => s + n, 0)
-  const cashSales = byMethod['Efectivo'] ?? 0
-  const cashAccountPayments = accountPaymentsByMethod['Efectivo'] ?? 0
-  const expectedCash = session.opening_float + cashSales + cashAccountPayments
+  const totals = summarizeCash(movements)
+  const expectedCash = Math.round((Number(session.opening_float) + totals.cash) * 100) / 100
   const countedNum = parseNum(counted) || 0
   const diff = counted !== '' ? countedNum - expectedCash : 0
   const cashForWithdrawal = counted !== '' ? countedNum : expectedCash
@@ -1510,15 +1527,14 @@ function CloseCajaModal({
   const fmt = (n: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n)
 
   const doClose = async () => {
+    if (loadFailed) return
     setSaving(true)
     setError('')
-    const { data, error: closeError } = await supabase.from('cash_sessions').update({
-      status: 'closed',
-      closed_at: new Date().toISOString(),
-      closed_by: userId,
-      counted_cash: counted !== '' ? countedNum : expectedCash,
-      notes: JSON.stringify({ closing_shift: shift, cash_left: closingReserve, cash_withdrawn: cashWithdrawn }),
-    }).eq('id', session.id).eq('status', 'open').select('id').maybeSingle()
+    const { data, error: closeError } = await supabase.rpc('close_cash_session', {
+      p_session_id: session.id, p_expected_cash: expectedCash,
+      p_counted_cash: counted !== '' ? countedNum : expectedCash,
+      p_shift: shift, p_reserve: closingReserve,
+    })
     if (closeError) {
       setError(closeError.message)
       setSaving(false)
@@ -1572,43 +1588,15 @@ function CloseCajaModal({
               </div>
             )}
 
-            <div className="border border-border rounded-xl divide-y divide-border/60">
-              {Object.entries(byMethod).filter(([method]) => method !== 'Fiado').length === 0 ? (
-                <div className="px-4 py-3 font-body text-sm text-warm-gray text-center">Sin ventas en esta caja.</div>
-              ) : Object.entries(byMethod).filter(([method]) => method !== 'Fiado').map(([m, v]) => (
-                <div key={m} className="flex items-center justify-between px-4 py-2.5">
-                  <span className="font-body text-sm text-charcoal">{m}</span>
-                  <span className="font-num text-sm font-semibold text-charcoal">{fmt(v)}</span>
-                </div>
-              ))}
-              <div className="flex items-center justify-between px-4 py-2.5 bg-cream/50">
-                <span className="font-body text-sm font-bold text-charcoal">Total vendido</span>
-                <span className="font-num text-sm font-bold text-burgundy">{fmt(totalSales)}</span>
-              </div>
-            </div>
-            {(byMethod['Fiado'] ?? 0) > 0 && <p className="font-body text-xs text-warm-gray">Fiados registrados: {fmt(byMethod['Fiado'])}. No suman al cierre; se cobrarán después.</p>}
-
-            {Object.keys(accountPaymentsByMethod).length > 0 && (
-              <div className="border border-border rounded-xl divide-y divide-border/60">
-                <div className="px-4 py-2.5 bg-cream/50 font-body text-sm font-bold text-charcoal">Cobros de cuentas y fiados</div>
-                {Object.entries(accountPaymentsByMethod).map(([method, amount]) => (
-                  <div key={method} className="flex items-center justify-between px-4 py-2.5">
-                    <span className="font-body text-sm text-charcoal">{method}</span>
-                    <span className="font-num text-sm font-semibold text-charcoal">{fmt(amount)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <CashMovements rows={movements} compact />
+            {debt > 0 && <p className="text-xs text-warm-gray">Deuda generada en este turno: {fmt(debt)}. Se sumará a caja cuando se cobre.</p>}
 
             <div className="bg-cream-dark rounded-xl p-4 flex flex-col gap-2">
               <div className="flex justify-between font-body text-sm text-warm-gray">
                 <span>Fondo inicial</span><span className="font-num">{fmt(session.opening_float)}</span>
               </div>
               <div className="flex justify-between font-body text-sm text-warm-gray">
-                <span>+ Ventas en efectivo</span><span className="font-num">{fmt(cashSales)}</span>
-              </div>
-              <div className="flex justify-between font-body text-sm text-warm-gray">
-                <span>+ Cobros de cuenta en efectivo</span><span className="font-num">{fmt(cashAccountPayments)}</span>
+                <span>+ Ingresos netos en efectivo</span><span className="font-num">{fmt(totals.cash)}</span>
               </div>
               <div className="flex justify-between font-body text-sm font-semibold text-charcoal border-t border-border pt-2">
                 <span>Efectivo esperado</span><span className="font-num">{fmt(expectedCash)}</span>
@@ -1639,7 +1627,7 @@ function CloseCajaModal({
               </div>
             </div>
 
-            <button onClick={doClose} disabled={saving}
+            <button onClick={doClose} disabled={saving || loadFailed}
               className="w-full px-4 py-3 bg-burgundy text-cream rounded-xl font-body text-sm font-bold hover:bg-burgundy-dark disabled:opacity-50 transition-colors">
               {saving ? 'Cerrando...' : 'Cerrar caja'}
             </button>

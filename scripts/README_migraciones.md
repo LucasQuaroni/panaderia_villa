@@ -26,6 +26,13 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
    personal de atención dé de alta clientes mayoristas y registre cobros de
    sus cuentas. Ejecutarla después de la `009` y antes de desplegar las
    pantallas que usan fiados.
+10. **`011_pagos_parciales_y_correcciones.sql`** — agrega abonos iniciales en
+    ambos mostradores, un detalle único de ingresos de caja y edición
+    extraordinaria de ventas con motivo e historial, exclusiva del admin.
+    Si la caja original está cerrada, registra la diferencia de cobro en la
+    caja abierta y conserva los importes del cierre anterior. Coordina ventas
+    y pagos con el cierre para rechazar totales desactualizados. Ejecutarla
+    después de la `010` y antes de desplegar estas nuevas pantallas.
 
 La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
 existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.
@@ -105,6 +112,31 @@ Los **fiados** se registran con un cliente, descuentan stock y quedan fuera
 del cierre de caja. Cuando el cliente paga, buscá su nombre en **Fiados** y
 registrá el cobro total o parcial. Los cobros en efectivo se suman a la caja
 del turno en que se reciben.
+
+Desde `011`, **Pago parcial** permite elegir un cliente y cobrar una parte en
+efectivo o transferencia; el resto queda en fiado/cuenta corriente. La venta
+descuenta stock una sola vez. El abono aparece como ingreso de la venta y los
+pagos posteriores como cobros de cuenta. Ambos medios necesitan caja abierta.
+
+En **Ventas**, el admin puede desplegar una venta y elegir **Edición
+extraordinaria** para corregir productos, cantidades, precios y cobro. Es
+obligatorio indicar el motivo. El historial conserva el antes y el después,
+y el stock recibe únicamente la diferencia de cantidades. Una corrección no
+puede dejar pagos de cuenta sin una deuda que los respalde: si el cliente ya
+saldó, habrá que revisar esos cobros antes de reducir la deuda.
+
+En **Caja y movimientos** y en el cierre se separan las ventas minoristas y
+mayoristas, los cobros de ambas cuentas y los ajustes, con importes en efectivo
+y transferencia. La parte pendiente de una venta no se suma al dinero cobrado.
+
+### Prueba aislada de la migración 011
+
+`test_pagos_y_correcciones.sql` crea datos ficticios y ejecuta las migraciones
+necesarias. Usarlo **solo en una base local vacía cuyo nombre empiece con
+`villa_test`**, nunca en el proyecto de producción. Se ejecuta con `psql` y
+`ON_ERROR_STOP`; comprueba saldos, stock, caja, cierres, reintentos, permisos e
+historial. La migración `011` se ejecuta una sola vez en producción, como las
+anteriores.
 
 ### Modo offline
 

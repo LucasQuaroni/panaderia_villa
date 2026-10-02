@@ -5,7 +5,7 @@ import type { createClient } from '@/lib/supabase/client'
 
 type Client = ReturnType<typeof createClient>
 type Sale = { id: string; sold_at: string; total: number; payment_method: string }
-type Payment = { id: string; received_at: string; amount: number; payment_method: string }
+type Payment = { id: string; received_at: string; amount: number; payment_method: string; sale_id: string | null }
 type Row = { id: string; at: string; label: string; debit: number; credit: number; balance: number }
 const money = (n: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
 
@@ -30,7 +30,7 @@ export default function WholesaleLedger({ supabase, customer, onClose }: { supab
       }
       for (let offset = 0; ; offset += 500) {
         const { data, error: queryError } = await supabase.from('wholesale_account_payments')
-          .select('id,received_at,amount,payment_method')
+          .select('id,received_at,amount,payment_method,sale_id')
           .eq('customer_id', customer.id)
           .order('received_at', { ascending: true }).range(offset, offset + 499)
         if (queryError) { if (!cancelled) { setError(queryError.message); setLoading(false) } return }
@@ -39,8 +39,8 @@ export default function WholesaleLedger({ supabase, customer, onClose }: { supab
       }
       const entries = [
         ...sales.map(sale => ({ id: sale.id, at: sale.sold_at, label: 'Venta a cuenta', debit: Number(sale.total), credit: 0 })),
-        ...payments.map(payment => ({ id: payment.id, at: payment.received_at, label: `Cobro · ${payment.payment_method}`, debit: 0, credit: Number(payment.amount) })),
-      ].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
+        ...payments.map(payment => ({ id: payment.id, at: payment.received_at, label: `${payment.sale_id ? 'Abono al comprar' : 'Cobro de cuenta'} · ${payment.payment_method}`, debit: 0, credit: Number(payment.amount) })),
+      ].sort((a, b) => a.at.localeCompare(b.at) || Number(b.debit > 0) - Number(a.debit > 0) || a.id.localeCompare(b.id))
       let balance = 0
       const ledger = entries.map(entry => ({ ...entry, balance: balance += entry.debit - entry.credit }))
       if (!cancelled) { setRows(ledger.reverse()); setError(''); setLoading(false) }

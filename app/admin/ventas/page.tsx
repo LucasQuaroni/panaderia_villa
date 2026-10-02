@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import SaleCorrection from '@/components/admin/SaleCorrection'
+import type { SalePaymentSummary } from '@/lib/pos/cash'
 import {
   Receipt, TrendingUp, ShoppingCart, CircleDollarSign,
   ChevronDown, ChevronRight, Calendar,
@@ -57,6 +59,15 @@ export default function VentasPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [summaries, setSummaries] = useState<Record<string, SalePaymentSummary>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    void supabase.rpc('get_user_role').then(({ data }) => { if (!cancelled) setIsAdmin(data === 'admin') })
+    return () => { cancelled = true }
+  }, [supabase])
 
   const fetchSales = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true)
@@ -73,19 +84,28 @@ export default function VentasPage() {
         .order('sold_at', { ascending: false }),
       supabase
         .from('wholesale_account_payments')
-        .select('id, amount, payment_method, received_at, customer:wholesale_customers(business_name)')
+        .select('id, amount, payment_method, received_at, customer:wholesale_customers(business_name)').is('sale_id', null)
         .gte('received_at', start.toISOString())
         .lt('received_at', end.toISOString())
         .order('received_at', { ascending: false }),
       supabase
         .from('retail_account_payments')
-        .select('id, amount, payment_method, received_at, customer:retail_customers(name)')
+        .select('id, amount, payment_method, received_at, customer:retail_customers(name)').is('sale_id', null)
         .gte('received_at', start.toISOString())
         .lt('received_at', end.toISOString())
         .order('received_at', { ascending: false }),
     ])
-    if (salesResult.error || paymentsResult.error || retailPaymentsResult.error) {
-      setError(salesResult.error?.message ?? paymentsResult.error?.message ?? retailPaymentsResult.error?.message ?? 'No se pudieron actualizar las ventas.')
+    const ids = (salesResult.data ?? []).map(sale => sale.id)
+    const nextSummaries: Record<string, SalePaymentSummary> = {}
+    let summaryError: string | null = null
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const { data, error: queryError } = await supabase.from('sale_payment_summary').select('*').in('sale_id', ids.slice(offset, offset + 500))
+      if (queryError) { summaryError = queryError.message; break }
+      for (const row of (data ?? []) as SalePaymentSummary[]) nextSummaries[row.sale_id] = row
+    }
+    setSummaries(nextSummaries)
+    if (salesResult.error || paymentsResult.error || retailPaymentsResult.error || summaryError) {
+      setError(salesResult.error?.message ?? paymentsResult.error?.message ?? retailPaymentsResult.error?.message ?? summaryError ?? 'No se pudieron actualizar las ventas.')
     } else {
       setSales(((salesResult.data ?? []) as unknown as Sale[]).map((sale) => ({
         ...sale,
@@ -137,7 +157,13 @@ export default function VentasPage() {
   const avg = count ? total / count : 0
 
   const byMethod: Record<string, number> = {}
-  for (const s of sales) byMethod[s.payment_method ?? '—'] = (byMethod[s.payment_method ?? '—'] ?? 0) + Number(s.total)
+  for (const sale of sales) {
+    const paid = summaries[sale.id]
+    if (!paid) continue
+    for (const [label, amount] of [['Efectivo cobrado', paid.cash_paid], ['Transferencia cobrada', paid.transfer_paid], ['Saldo a cuenta / fiado', paid.debt_amount]] as const) {
+      if (Number(amount)) byMethod[label] = (byMethod[label] ?? 0) + Number(amount)
+    }
+  }
 
   const qtyByProduct: Record<string, number> = {}
   for (const s of filtered) for (const it of s.items) qtyByProduct[it.description] = (qtyByProduct[it.description] ?? 0) + Number(it.stock_quantity ?? it.quantity)
@@ -198,7 +224,7 @@ export default function VentasPage() {
       {/* Desglose + top */}
       <div className="grid sm:grid-cols-2 gap-4 mb-6">
         <div className="bg-white rounded-2xl border border-border shadow-sm p-5">
-          <h3 className="font-sans font-bold text-charcoal mb-3">Por medio de pago</h3>
+          <h3 className="font-sans font-bold text-charcoal mb-3">Cobrado y saldo de las ventas</h3>
           {Object.keys(byMethod).length === 0 ? (
             <p className="font-body text-sm text-warm-gray">Sin ventas.</p>
           ) : Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([m, v]) => (
@@ -247,12 +273,14 @@ export default function VentasPage() {
                 </button>
                 {open && (
                   <div className="border-t border-border px-4 py-3 bg-cream/20">
+                    {summaries[s.id] && <p className="text-xs text-warm-gray mb-3">Cobrado en efectivo {fmt(Number(summaries[s.id].cash_paid))} · Transferencia {fmt(Number(summaries[s.id].transfer_paid))} · Saldo a cuenta {fmt(Number(summaries[s.id].debt_amount))}</p>}
                     {s.items.map(it => (
                       <div key={it.id} className="flex justify-between py-1 font-body text-sm">
                         <span className="text-charcoal">{it.description} <span className="text-warm-gray text-xs">({fmtQty(Number(it.quantity), it.unit)} × {fmt(Number(it.unit_price))})</span></span>
                         <span className="font-num font-semibold text-charcoal">{fmt(Number(it.subtotal))}</span>
                       </div>
                     ))}
+                    {isAdmin && <button onClick={() => setEditing(s.id)} className="mt-3 px-3 py-2 border border-burgundy text-burgundy rounded-lg text-xs font-semibold">Edición extraordinaria / historial</button>}
                   </div>
                 )}
               </div>
@@ -291,6 +319,7 @@ export default function VentasPage() {
       <h3 className="font-sans font-bold text-charcoal mt-7 mb-3 flex items-center gap-2"><CircleDollarSign size={18} /> Cobros de fiados ({retailPayments.length})</h3>
       {loading ? null : retailPayments.length === 0 ? <p className="text-sm text-warm-gray">No hubo cobros de fiados este día.</p> :
         <div className="flex flex-col gap-2">{retailPayments.map(payment => <div key={payment.id} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-white px-4 py-3 shadow-sm"><div><div className="font-body text-sm font-semibold text-charcoal">{payment.customer?.name ?? 'Cliente'}</div><div className="font-body text-xs text-warm-gray">{fmtTime(payment.received_at)} hs · {payment.payment_method}</div></div><span className="font-num text-base font-bold text-green-700">{fmt(Number(payment.amount))}</span></div>)}</div>}
+      {editing && <SaleCorrection saleId={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void fetchSales(false) }}/>}
     </div>
   )
 }

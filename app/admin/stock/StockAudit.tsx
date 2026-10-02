@@ -60,8 +60,27 @@ export default function StockAudit({ supabase }: { supabase: Client }) {
       setLoading(false)
       return
     }
+    // Una venta corregida conserva su descuento original y agrega diferencias.
+    // Se comparan ambos contra los renglones actuales de la venta.
+    const correctionResult = ids.length
+      ? await supabase.from('sale_corrections').select('id,sale_id').in('sale_id', ids)
+      : { data: [], error: null }
+    if (correctionResult.error) { setError(correctionResult.error.message); setLoading(false); return }
+    const correctionSales = new Map((correctionResult.data ?? []).map(row => [row.id, row.sale_id]))
+    const correctedMovements: Movement[] = []
+    if (correctionSales.size) {
+      for (let offset = 0; ; offset += 500) {
+        const { data, error: queryError } = await supabase.from('stock_movements')
+          .select('id,product_id,delta,reason,ref_type,ref_id,created_at')
+          .eq('ref_type', 'sale_correction').in('ref_id', [...correctionSales.keys()])
+          .order('id').range(offset, offset + 499)
+        if (queryError) { setError(queryError.message); setLoading(false); return }
+        correctedMovements.push(...((data ?? []) as Movement[]).map(row => ({ ...row, ref_id: correctionSales.get(row.ref_id ?? '') ?? null })))
+        if ((data ?? []).length < 500) break
+      }
+    }
     setSales(saleRows)
-    setMovements((movementResult.data ?? []) as Movement[])
+    setMovements([...((movementResult.data ?? []) as Movement[]), ...correctedMovements])
     setManual((manualResult.data ?? []) as Movement[])
     setNames(Object.fromEntries((productResult.data ?? []).map(product => [product.id, product.name])))
     setError('')
@@ -124,7 +143,7 @@ export default function StockAudit({ supabase }: { supabase: Client }) {
     </div>
     <div className="p-4 border-t border-border">
       <h3 className="font-semibold text-charcoal">Otros movimientos del día</h3>
-      <p className="text-xs text-warm-gray mb-2">Ajustes, mermas y anulaciones también cambian la existencia.</p>
+      <p className="text-xs text-warm-gray mb-2">Ajustes, correcciones de ventas, mermas y anulaciones también cambian la existencia.</p>
       {manual.length === 0 ? <p className="text-sm text-warm-gray">No hubo otros movimientos.</p> : <div className="max-h-48 overflow-y-auto divide-y divide-border/60">{manual.map(movement => <div key={movement.id} className="flex justify-between gap-3 py-2 text-sm"><span>{time(movement.created_at)} · {names[movement.product_id ?? ''] ?? 'Producto eliminado'} · {movement.reason}</span><span className="font-num">{Number(movement.delta) > 0 ? '+' : ''}{qty(Number(movement.delta))}</span></div>)}</div>}
     </div>
   </section>
