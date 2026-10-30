@@ -7,7 +7,7 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import {
   LayoutDashboard, Package, Users, MessageSquare, Calculator,
-  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt, Store,
+  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt, Store, ReceiptText, IdCard,
 } from 'lucide-react'
 
 type Role = 'admin' | 'cashier' | null
@@ -39,6 +39,13 @@ const navSections = [
       { href: '/admin/prices', label: 'Lista de Precios', icon: Printer, adminOnly: true },
       { href: '/admin/ventas', label: 'Ventas', icon: Receipt, adminOnly: true },
       { href: '/admin/caja', label: 'Historial de Caja', icon: Wallet, adminOnly: true },
+    ],
+  },
+  {
+    label: 'ADMINISTRACIÓN',
+    items: [
+      { href: '/admin/gastos', label: 'Gastos', icon: ReceiptText, adminOnly: true },
+      { href: '/admin/sueldos', label: 'Empleados y sueldos', icon: IdCard, adminOnly: true },
     ],
   },
 ]

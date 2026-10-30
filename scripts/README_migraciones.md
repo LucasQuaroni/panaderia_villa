@@ -33,6 +33,13 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
     caja abierta y conserva los importes del cierre anterior. Coordina ventas
     y pagos con el cierre para rechazar totales desactualizados. Ejecutarla
     después de la `010` y antes de desplegar estas nuevas pantallas.
+12. **`012_gastos_y_sueldos.sql`** — agrega gastos de la panadería por
+    categoría (impuestos, proveedores, servicios, etc.), empleados con su
+    sueldo, pagos de sueldos y gastos personales (una categoría por persona:
+    Vale y Estela). Es un registro aparte, solo para el administrador: no
+    modifica la caja ni el cierre. Nada se borra: los gastos se anulan y las
+    categorías y empleados se desactivan. Ejecutarla después de la `011` y
+    antes de desplegar las pantallas **Gastos** y **Empleados y sueldos**.
 
 La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
 existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.
@@ -137,6 +144,21 @@ necesarias. Usarlo **solo en una base local vacía cuyo nombre empiece con
 `ON_ERROR_STOP`; comprueba saldos, stock, caja, cierres, reintentos, permisos e
 historial. La migración `011` se ejecuta una sola vez en producción, como las
 anteriores.
+
+### Gastos y sueldos (desde 012)
+
+En **Administración → Gastos** se cargan los pagos de la panadería con fecha,
+categoría, detalle, proveedor, importe y medio de pago. El mes muestra el total
+y lo separa en gastos de la panadería, sueldos (por empleado) y gastos
+personales (por persona). Las categorías se agregan, renombran o desactivan en
+la pestaña **Categorías**.
+
+En **Administración → Empleados y sueldos** se cargan los datos de cada
+empleado y su sueldo pactado. **Registrar pago** crea un gasto en la categoría
+Sueldos (sueldo, adelanto, aguinaldo, etc.), que también suma en Gastos.
+
+`test_gastos_y_sueldos.sql` prueba la migración en una base local `villa_test`
+(mismas reglas que la prueba de la `011`).
 
 ### Modo offline
 

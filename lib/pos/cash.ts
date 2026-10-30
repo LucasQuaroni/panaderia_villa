@@ -37,6 +37,19 @@ export function summarizeCash(rows: CashMovement[]) {
   return { cash, transfer, sales, accounts, adjustments, total: sum(rows) }
 }
 
+/** Movimientos de caja con fecha en [from, to), sin importar el turno. */
+export async function loadCashMovementsBetween(client: ReturnType<typeof createClient>, from: Date, to: Date) {
+  const rows: CashMovement[] = []
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await client.from('cash_movements').select('*')
+      .gte('occurred_at', from.toISOString()).lt('occurred_at', to.toISOString())
+      .order('occurred_at', { ascending: false }).order('id').range(offset, offset + 499)
+    if (error) throw new Error(`No se pudieron cargar los movimientos de caja: ${error.message}`)
+    rows.push(...(data ?? []) as CashMovement[])
+    if ((data ?? []).length < 500) return rows
+  }
+}
+
 export async function loadCashMovements(client: ReturnType<typeof createClient>, sessionIds: string[]) {
   const rows: CashMovement[] = []
   if (!sessionIds.length) return rows
