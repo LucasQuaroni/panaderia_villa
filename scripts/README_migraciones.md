@@ -40,6 +40,13 @@ Estos pasos se corren **una sola vez** en tu proyecto de Supabase. No borran dat
     modifica la caja ni el cierre. Nada se borra: los gastos se anulan y las
     categorías y empleados se desactivan. Ejecutarla después de la `011` y
     antes de desplegar las pantallas **Gastos** y **Empleados y sueldos**.
+13. **`013_historial_stock.sql`** — agrega la función `stock_history`, que
+    reconstruye cuánto stock había de cada producto al inicio y al final de un
+    día (o hasta una hora puntual) a partir de los movimientos ya registrados,
+    separando ventas, mermas y ajustes. Es solo lectura y solo para el
+    administrador: no modifica stock, ventas ni caja. Ejecutarla después de la
+    `012` y antes de desplegar la pantalla **Stock → Historial de stock**.
+    Prueba local aislada: `scripts/test_historial_stock.sql`.
 
 La baja lógica de productos y los márgenes mayoristas siguen usando las tablas
 existentes. Desde `007`, los clientes y cobros mayoristas tienen tablas propias.

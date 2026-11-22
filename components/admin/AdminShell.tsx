@@ -1,19 +1,22 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
 import { createClient } from '@/lib/supabase/client'
 import {
   LayoutDashboard, Package, Users, MessageSquare, Calculator,
-  FileText, LogOut, Menu, X, ChevronRight, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt, Store, ReceiptText, IdCard,
+  FileText, LogOut, Menu, X, ChevronRight, ChevronDown, ShoppingBag, Printer, ShoppingCart, Wallet, Boxes, Receipt, Store, ReceiptText, IdCard,
+  History, ClipboardCheck, type LucideIcon,
 } from 'lucide-react'
 
 type Role = 'admin' | 'cashier' | null
+type NavLink = { href: string; label: string; icon: LucideIcon; adminOnly: boolean; exact?: boolean }
+type NavItem = NavLink & { children?: NavLink[] }
 
 const dashboardItem = { href: '/admin', label: 'Dashboard', icon: LayoutDashboard, exact: true, adminOnly: true }
-const navSections = [
+const navSections: { label: string; items: NavItem[] }[] = [
   {
     label: 'WEB',
     items: [
@@ -27,7 +30,14 @@ const navSections = [
     items: [
       { href: '/admin/products', label: 'Productos', icon: Package, adminOnly: true },
       { href: '/admin/costs', label: 'Calculadora de Costos', icon: Calculator, adminOnly: true },
-      { href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true },
+      {
+        href: '/admin/stock', label: 'Stock', icon: Boxes, adminOnly: true,
+        children: [
+          { href: '/admin/stock', label: 'Stock actual', icon: Boxes, adminOnly: true, exact: true },
+          { href: '/admin/stock/historial', label: 'Historial de stock', icon: History, adminOnly: true },
+          { href: '/admin/stock/registro', label: 'Registro de ventas y descuentos', icon: ClipboardCheck, adminOnly: true },
+        ],
+      },
     ],
   },
   {
@@ -54,10 +64,28 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
   const pathname = usePathname()
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  // Grupos con submenú desplegados. El grupo de la página actual se abre solo.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
 
   const isAdmin = role === 'admin'
   const isActive = (href: string, exact?: boolean) =>
-    exact ? pathname === href : pathname.startsWith(href)
+    exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`)
+
+  useEffect(() => {
+    const current = navSections.flatMap((section) => section.items)
+      .find((item) => item.children && isActive(item.href))
+    if (current) setOpenGroups((previous) => previous.has(current.href) ? previous : new Set(previous).add(current.href))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname])
+
+  const toggleGroup = (href: string) => setOpenGroups((previous) => {
+    const next = new Set(previous)
+    if (next.has(href)) next.delete(href)
+    else next.add(href)
+    return next
+  })
+
+  const linkClass = (active: boolean) => `flex items-center gap-3 px-3 py-2.5 rounded-xl font-body text-sm font-medium transition-all duration-200 group ${active ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}`
 
   const handleLogout = async () => {
     const supabase = createClient()
@@ -115,10 +143,38 @@ export default function AdminShell({ children, role }: { children: React.ReactNo
             <div key={section.label} className="mt-3 first:mt-1">
               <div className="px-3 pb-1.5 font-body text-[10px] font-bold tracking-[0.16em] text-sidebar-foreground/40">{section.label}</div>
               <div className="flex flex-col gap-1">
-                {visibleItems.map(({ href, label, icon: Icon }) => {
-                  const active = isActive(href)
+                {visibleItems.map(({ href, label, icon: Icon, exact, children }) => {
+                  const visibleChildren = children?.filter((child) => isAdmin || !child.adminOnly) ?? []
+                  if (visibleChildren.length > 0) {
+                    const groupActive = isActive(href)
+                    const expanded = openGroups.has(href)
+                    return (
+                      <div key={href} className="flex flex-col gap-1">
+                        <button type="button" onClick={() => toggleGroup(href)} aria-expanded={expanded} className={`${linkClass(false)} w-full text-left ${groupActive ? '!text-sidebar-foreground' : ''}`}>
+                          <Icon size={18} className={groupActive ? 'text-sidebar-primary' : 'group-hover:text-sidebar-primary transition-colors'} />
+                          {label}
+                          <ChevronDown size={14} className={`ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                        </button>
+                        {expanded && (
+                          <div className="ml-5 pl-2 border-l border-sidebar-border flex flex-col gap-0.5">
+                            {visibleChildren.map((child) => {
+                              const ChildIcon = child.icon
+                              const active = isActive(child.href, child.exact)
+                              return (
+                                <Link key={child.href} href={child.href} onClick={() => setSidebarOpen(false)} className={`${linkClass(active)} !py-2 !text-[13px]`}>
+                                  <ChildIcon size={15} className={`shrink-0 ${active ? 'text-sidebar-primary' : 'group-hover:text-sidebar-primary transition-colors'}`} />
+                                  <span className="leading-tight">{child.label}</span>
+                                </Link>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                  const active = isActive(href, exact)
                   return (
-                    <Link key={href} href={href} onClick={() => setSidebarOpen(false)} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl font-body text-sm font-medium transition-all duration-200 group ${active ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'}`}>
+                    <Link key={href} href={href} onClick={() => setSidebarOpen(false)} className={linkClass(active)}>
                       <Icon size={18} className={active ? 'text-sidebar-primary' : 'group-hover:text-sidebar-primary transition-colors'} />
                       {label}
                       {active && <ChevronRight size={14} className="ml-auto text-sidebar-primary" />}

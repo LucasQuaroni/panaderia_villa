@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { createClient } from '@/lib/supabase/client'
+import { dayBounds, fmtStockQty, fmtTime, localDay, movementLabel } from '@/lib/stock'
 
 type Client = ReturnType<typeof createClient>
 type Item = { product_id: string | null; description: string; unit: string; quantity: number; stock_quantity: number | null }
@@ -9,15 +10,11 @@ type Sale = { id: string; sold_at: string; sale_channel: string; payment_method:
 type Movement = { id: string; product_id: string | null; delta: number; reason: string; ref_type: string | null; ref_id: string | null; created_at: string }
 type AuditRow = { key: string; at: string; saleId: string; channel: string; product: string; unit: string; sold: number; expected: number; actual: number; free: boolean }
 
-const localDay = () => {
-  const date = new Date()
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-const qty = (value: number) => value.toLocaleString('es-AR', { maximumFractionDigits: 3 })
-const time = (value: string) => new Date(value).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
+const qty = fmtStockQty
+const time = fmtTime
 
 export default function StockAudit({ supabase }: { supabase: Client }) {
-  const [day, setDay] = useState(localDay)
+  const [day, setDay] = useState(() => localDay())
   const [sales, setSales] = useState<Sale[]>([])
   const [movements, setMovements] = useState<Movement[]>([])
   const [manual, setManual] = useState<Movement[]>([])
@@ -28,9 +25,7 @@ export default function StockAudit({ supabase }: { supabase: Client }) {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const start = new Date(`${day}T00:00:00`)
-    const end = new Date(start)
-    end.setDate(end.getDate() + 1)
+    const { start, end } = dayBounds(day)
     const from = start.toISOString(), to = end.toISOString()
     const [saleResult, manualResult, productResult] = await Promise.all([
       supabase.from('sales')
@@ -119,32 +114,30 @@ export default function StockAudit({ supabase }: { supabase: Client }) {
   const shown = rows.filter(row => row.product.toLocaleLowerCase('es-AR').includes(filter.toLocaleLowerCase('es-AR')))
   const mismatches = rows.filter(row => !row.free && Math.abs(row.expected - row.actual) > 0.0001).length
 
-  return <section className="mt-8 rounded-2xl border border-border bg-white shadow-sm overflow-hidden">
+  return <section className="rounded-2xl border border-border bg-white shadow-sm overflow-hidden">
     <div className="p-4 border-b border-border">
-      <h2 className="font-sans text-xl font-bold text-charcoal">Registro de ventas y descuentos</h2>
-      <p className="font-body text-sm text-warm-gray mt-1">Compara lo cargado en la venta con los movimientos que realmente afectaron el stock.</p>
-      <div className="mt-3 flex flex-wrap gap-2 items-center">
+      <div className="flex flex-wrap gap-2 items-center">
         <input type="date" value={day} onChange={event => setDay(event.target.value)} className="rounded-lg border border-border px-3 py-2 font-body text-sm" />
         <input value={filter} onChange={event => setFilter(event.target.value)} placeholder="Filtrar producto" className="rounded-lg border border-border px-3 py-2 font-body text-sm" />
         <button onClick={() => void load()} disabled={loading} className="rounded-lg border border-border px-3 py-2 font-body text-sm disabled:opacity-50">Actualizar</button>
-        {!loading && !error && <span className={`font-body text-sm ${mismatches ? 'text-red-700 font-semibold' : 'text-green-700'}`}>{mismatches} diferencias detectadas</span>}
+        {!loading && !error && <span className={`font-body text-sm ${mismatches ? 'text-red-700 font-semibold' : 'text-green-700'}`}>{mismatches === 0 ? 'Todas las ventas descontaron bien el stock' : `${mismatches} ${mismatches === 1 ? 'renglón para revisar' : 'renglones para revisar'}`}</span>}
       </div>
       {sales.length === 100 && <p className="mt-2 text-xs text-amber-700">Se muestran las últimas 100 ventas del día.</p>}
       {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
     </div>
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[740px] text-sm font-body"><thead><tr className="bg-cream-dark text-warm-gray text-xs uppercase"><th className="p-3 text-left">Hora / venta</th><th className="p-3 text-left">Producto</th><th className="p-3 text-right">Cargado</th><th className="p-3 text-right">Debía bajar</th><th className="p-3 text-right">Bajó</th><th className="p-3 text-left">Estado</th></tr></thead><tbody>
+      <table className="w-full min-w-[740px] text-sm font-body"><thead><tr className="bg-cream-dark text-warm-gray text-xs uppercase"><th className="p-3 text-left">Hora / venta</th><th className="p-3 text-left">Producto</th><th className="p-3 text-right">Vendido</th><th className="p-3 text-right">Debía descontar</th><th className="p-3 text-right">Se descontó</th><th className="p-3 text-left">Estado</th></tr></thead><tbody>
         {shown.map(row => {
           const mismatch = !row.free && Math.abs(row.expected - row.actual) > 0.0001
-          return <tr key={row.key} className="border-t border-border/60"><td className="p-3 text-warm-gray">{time(row.at)} · {row.channel}<div className="text-[10px] font-mono" title={row.saleId}>{row.saleId.slice(0, 8)}</div></td><td className="p-3 font-semibold text-charcoal">{row.product}</td><td className="p-3 text-right font-num">{qty(row.sold)} {row.unit}</td><td className="p-3 text-right font-num">{qty(row.expected)}</td><td className="p-3 text-right font-num">{qty(row.actual)}</td><td className={`p-3 ${mismatch ? 'font-semibold text-red-700' : 'text-warm-gray'}`}>{row.free ? 'Renglón sin producto: no descuenta' : mismatch ? 'Revisar' : 'Correcto'}</td></tr>
+          return <tr key={row.key} className={`border-t border-border/60 ${mismatch ? 'bg-red-50/60' : ''}`}><td className="p-3 text-warm-gray">{time(row.at)} · {row.channel}<div className="text-[10px] font-mono" title={row.saleId}>{row.saleId.slice(0, 8)}</div></td><td className="p-3 font-semibold text-charcoal">{row.product}</td><td className="p-3 text-right font-num">{qty(row.sold)} {row.unit}</td><td className="p-3 text-right font-num">{qty(row.expected)}</td><td className="p-3 text-right font-num">{qty(row.actual)}</td><td className={`p-3 ${mismatch ? 'font-semibold text-red-700' : 'text-warm-gray'}`}>{row.free ? 'Monto libre: no descuenta stock' : mismatch ? 'Revisar' : 'Correcto'}</td></tr>
         })}
         {!loading && shown.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-warm-gray">Sin ventas para esta fecha o filtro.</td></tr>}
       </tbody></table>
     </div>
     <div className="p-4 border-t border-border">
       <h3 className="font-semibold text-charcoal">Otros movimientos del día</h3>
-      <p className="text-xs text-warm-gray mb-2">Ajustes, correcciones de ventas, mermas y anulaciones también cambian la existencia.</p>
-      {manual.length === 0 ? <p className="text-sm text-warm-gray">No hubo otros movimientos.</p> : <div className="max-h-48 overflow-y-auto divide-y divide-border/60">{manual.map(movement => <div key={movement.id} className="flex justify-between gap-3 py-2 text-sm"><span>{time(movement.created_at)} · {names[movement.product_id ?? ''] ?? 'Producto eliminado'} · {movement.reason}</span><span className="font-num">{Number(movement.delta) > 0 ? '+' : ''}{qty(Number(movement.delta))}</span></div>)}</div>}
+      <p className="text-xs text-warm-gray mb-2">Conteos, ajustes, mermas, correcciones y anulaciones de ventas también cambian la existencia.</p>
+      {manual.length === 0 ? <p className="text-sm text-warm-gray">No hubo otros movimientos.</p> : <div className="max-h-64 overflow-y-auto divide-y divide-border/60">{manual.map(movement => <div key={movement.id} className="flex justify-between gap-3 py-2 text-sm"><span>{time(movement.created_at)} · <span className="font-semibold text-charcoal">{names[movement.product_id ?? ''] ?? 'Producto eliminado'}</span> · {movementLabel(movement.reason, movement.ref_type)}</span><span className={`font-num ${Number(movement.delta) < 0 ? 'text-red-700' : 'text-green-700'}`}>{Number(movement.delta) > 0 ? '+' : ''}{qty(Number(movement.delta))}</span></div>)}</div>}
     </div>
   </section>
 }
