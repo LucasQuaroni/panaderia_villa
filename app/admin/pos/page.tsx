@@ -22,7 +22,7 @@ import { removePending, pendingCount, updatePendingPayment, type PendingSale } f
 import { syncPending } from '@/lib/pos/sync'
 import { cacheProducts, getCachedProducts, cacheSession, getCachedSession } from '@/lib/pos/cache'
 import { useScale, EMPTY_KG, type ScaleState } from '@/hooks/use-scale'
-import { roundUpTo100 } from '@/lib/money'
+import { lineSubtotal, roundPrice } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
 import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
 import { cartDraftKey, readCartDraft, saveCartDraft } from '@/lib/pos/cart-drafts'
@@ -293,15 +293,15 @@ export default function PosPage() {
   }, [cart])
 
   const addUnitProduct = useCallback((p: Product, option: SaleOption | null, targetCart: CartIndex) => {
-    const unitPrice = roundUpTo100(Number(p.price ?? 0))
+    const unitPrice = roundPrice(Number(p.price ?? 0))
     const amount = option?.quantity ?? 1
     const presentation = option?.label ?? p.unit
-    const presentationPrice = roundUpTo100(Number(option?.price) > 0 ? Number(option?.price) : unitPrice * amount)
+    const presentationPrice = roundPrice(Number(option?.price) > 0 ? Number(option?.price) : unitPrice * amount)
     setCarts(previous => updateCartAt(previous, targetCart, current => {
       const existing = current.find(i => i.product_id === p.id && i.unit === presentation)
       if (existing) {
         return current.map(i => i === existing
-          ? { ...i, quantity: i.quantity + 1, subtotal: roundUpTo100((i.quantity + 1) * i.unit_price) }
+          ? { ...i, quantity: i.quantity + 1, subtotal: lineSubtotal(i.quantity + 1, i.unit_price, i.unit) }
           : i)
       }
       return [...current, {
@@ -334,11 +334,11 @@ export default function PosPage() {
   }
 
   const addWeighed = (p: Product, kg: number) => {
-    const unitPrice = roundUpTo100(Number(p.price ?? 0))
+    const unitPrice = roundPrice(Number(p.price ?? 0))
     const targetCart = weighingCartRef.current
     setCarts(previous => updateCartAt(previous, targetCart, current => [...current, {
         key: crypto.randomUUID(), product_id: p.id, name: p.name, unit: 'kg',
-        unit_price: unitPrice, quantity: kg, subtotal: roundUpTo100(kg * unitPrice),
+        unit_price: unitPrice, quantity: kg, subtotal: lineSubtotal(kg, unitPrice, 'kg'),
         stockFactor: 1,
       }]))
     setWeighing(null)
@@ -349,7 +349,7 @@ export default function PosPage() {
   const addFreeAmount = (desc: string, amount: number) => {
     setCart(prev => [...prev, {
       key: crypto.randomUUID(), product_id: null, name: desc || 'Varios',
-      unit: 'unidad', unit_price: amount, quantity: 1, subtotal: roundUpTo100(amount),
+      unit: 'unidad', unit_price: amount, quantity: 1, subtotal: roundPrice(amount),
       stockFactor: 1,
     }])
     setFreeOpen(false)
@@ -360,7 +360,7 @@ export default function PosPage() {
     setCart(prev => prev.map(i => {
       if (i.key !== key) return i
       const q = Math.max(0, Math.round((i.quantity + delta) * 1000) / 1000)
-      return { ...i, quantity: q, subtotal: roundUpTo100(q * i.unit_price) }
+      return { ...i, quantity: q, subtotal: lineSubtotal(q, i.unit_price, i.unit) }
     }))
     setQuantityDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
   }
@@ -377,7 +377,7 @@ export default function PosPage() {
     const quantity = parseNum(raw)
     if (!Number.isFinite(quantity) || quantity < 0) return
     setCart(prev => prev.map(i => i.key === key
-      ? { ...i, quantity, subtotal: roundUpTo100(quantity * i.unit_price) }
+      ? { ...i, quantity, subtotal: lineSubtotal(quantity, i.unit_price, i.unit) }
       : i))
   }
 
@@ -387,7 +387,7 @@ export default function PosPage() {
     const quantity = parseNum(raw)
     if (Number.isFinite(quantity) && quantity >= 0) {
       setCart(prev => prev.map(i => i.key === key
-        ? { ...i, quantity, subtotal: roundUpTo100(quantity * i.unit_price) }
+        ? { ...i, quantity, subtotal: lineSubtotal(quantity, i.unit_price, i.unit) }
         : i))
     }
     setQuantityDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
@@ -725,7 +725,7 @@ export default function PosPage() {
                     )}
                     <span className="font-body text-sm font-semibold text-charcoal leading-snug line-clamp-2 pr-8">{p.name}</span>
                     <span className="mt-2 flex items-center gap-1.5">
-                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(roundUpTo100(Number(p.price ?? 0)))}</span>
+                      <span className="font-num text-base font-bold text-burgundy">{fmtARS(roundPrice(Number(p.price ?? 0)))}</span>
                       <span className="font-body text-xs text-warm-gray">{p.unit === 'kg' ? '/ kg' : 'c/u'}</span>
                       {p.unit === 'kg' && <Scale size={13} className="text-warm-gray" />}
                     </span>
@@ -963,7 +963,7 @@ function UnitQuantityModal({
                 <span className="block font-body text-base font-bold">{option.label}</span>
                 <span className="block font-body text-xs text-warm-gray group-hover:text-cream/70">Descuenta {option.quantity.toLocaleString('es-AR', { maximumFractionDigits: 3 })} {product.unit} de stock</span>
               </span>
-              <span className="font-num text-xl font-bold">{fmtARS(roundUpTo100(Number(option.price) > 0 ? Number(option.price) : Number(product.price ?? 0) * option.quantity))}</span>
+              <span className="font-num text-xl font-bold">{fmtARS(roundPrice(Number(option.price) > 0 ? Number(option.price) : roundPrice(Number(product.price ?? 0)) * option.quantity))}</span>
             </button>
           ))}
         </div>
@@ -1125,7 +1125,7 @@ function WeighModal({
         <div className="p-5 flex flex-col gap-4">
           <div>
             <div className="font-body text-base font-semibold text-charcoal">{product.name}</div>
-            <div className="font-body text-xs text-warm-gray">{fmtARS(roundUpTo100(Number(product.price ?? 0)))} / kg</div>
+            <div className="font-body text-xs text-warm-gray">{fmtARS(roundPrice(Number(product.price ?? 0)))} / kg</div>
           </div>
 
           {/* Visor: el peso que se va a cargar */}
@@ -1167,7 +1167,7 @@ function WeighModal({
           <div className="flex items-center justify-between bg-cream-dark rounded-xl px-4 py-3">
             <span className="font-body text-sm text-warm-gray">Subtotal</span>
             <span className="font-num text-2xl font-bold text-burgundy">
-              {fmtARS(roundUpTo100((valido ? kg : 0) * Number(product.price ?? 0)))}
+              {fmtARS(lineSubtotal(valido ? kg : 0, roundPrice(Number(product.price ?? 0)), 'kg'))}
             </span>
           </div>
 
@@ -1419,7 +1419,7 @@ function FreeAmountModal({
   const value = parseNum(amount)
   const valido = !isNaN(value) && value > 0
 
-  const confirmar = () => { if (valido) onConfirm(desc.trim(), roundUpTo100(value)) }
+  const confirmar = () => { if (valido) onConfirm(desc.trim(), roundPrice(value)) }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onCancel}>

@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:balanza": "node --experimental-strip-types scripts/test_balanza.ts"
+    "test:balanza": "node --experimental-strip-types scripts/test_balanza.ts",
+    "test:precios": "node --experimental-strip-types scripts/test_precios.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

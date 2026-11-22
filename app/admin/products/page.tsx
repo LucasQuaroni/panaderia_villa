@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { AlertTriangle, Plus, Pencil, Trash2, Star, RotateCcw, Save, X, Search } from 'lucide-react'
-import { roundUpTo100 } from '@/lib/money'
+import { roundPrice } from '@/lib/money'
 
 interface SaleOption {
   label: string
@@ -204,7 +204,7 @@ export default function AdminProductsPage() {
     const payload = {
       ...form,
       name,
-      price: form.price === null ? null : roundUpTo100(Number(form.price)),
+      price: form.price === null ? null : roundPrice(Number(form.price)),
       sale_options: form.unit === 'kg'
         ? []
         : form.sale_options
@@ -213,7 +213,7 @@ export default function AdminProductsPage() {
               quantity: Number(option.quantity),
               price: option.price === null || option.price === undefined || Number(option.price) <= 0
                 ? null
-                : roundUpTo100(Number(option.price)),
+                : roundPrice(Number(option.price)),
             }))
             .filter((option) => option.label && Number.isFinite(option.quantity) && option.quantity > 0),
     }
@@ -456,8 +456,8 @@ export default function AdminProductsPage() {
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Precio</label>
                   <input name="price" type="number" value={form.price ?? ''} onChange={handleChange}
                     className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy"
-                    placeholder="0.00" min="0" step="0.01" />
-                  <span className="font-body text-[11px] text-warm-gray">Al guardar se redondea hacia arriba al próximo múltiplo de $100.</span>
+                    placeholder="0" min="0" step="1" />
+                  <span className="font-body text-[11px] text-warm-gray">Se guarda tal cual, redondeado al peso (sin centavos).</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Unidad</label>
@@ -605,7 +605,7 @@ export default function AdminProductsPage() {
                   </td>
                   <td className="px-4 py-3 hidden md:table-cell">
                     <span className="font-num text-sm text-charcoal">
-                      {p.price !== null ? `$${roundUpTo100(Number(p.price)).toLocaleString('es-AR', { maximumFractionDigits: 0 })} / ${p.unit}` : '—'}
+                      {p.price !== null ? `$${roundPrice(Number(p.price)).toLocaleString('es-AR', { maximumFractionDigits: 0 })} / ${p.unit}` : '—'}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">

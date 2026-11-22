@@ -4,9 +4,9 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import {
   Package, Calculator, Plus, Pencil, Trash2, Save, X,
-  TrendingUp, ChevronDown, ChevronRight, Search,
+  TrendingUp, ChevronDown, ChevronRight, Search, AlertTriangle, RefreshCw, Target,
 } from 'lucide-react'
-import { roundUpTo100 } from '@/lib/money'
+import { markupForPrice, priceFromMarkup, roundPrice } from '@/lib/money'
 
 interface RawMaterial {
   id: string
@@ -69,6 +69,10 @@ export default function AdminCostsPage() {
   const [manualPriceValue, setManualPriceValue] = useState('')
   const [savingRecipe, setSavingRecipe] = useState(false)
   const [recipeError, setRecipeError] = useState('')
+  const [targetPrice, setTargetPrice] = useState('')
+  const [targetError, setTargetError] = useState('')
+  const [applyingPrices, setApplyingPrices] = useState(false)
+  const [priceMessage, setPriceMessage] = useState('')
 
   const fetchMaterials = useCallback(async () => {
     const { data } = await supabase.from('raw_materials').select('*').order('name')
@@ -139,7 +143,7 @@ export default function AdminCostsPage() {
   const calcSuggestedPrice = (recipe: Recipe): number => {
     const cost = calcRecipeCost(recipe)
     const perUnit = recipe.yield_qty > 0 ? cost / recipe.yield_qty : cost
-    return roundUpTo100(perUnit * (1 + recipe.markup_pct / 100))
+    return priceFromMarkup(perUnit, Number(recipe.markup_pct))
   }
 
   // ── Recipes CRUD ──────────────────────────────────────────────────────────────
@@ -155,6 +159,8 @@ export default function AdminCostsPage() {
     setSaleMode('unidad')
     setManualPrice(false)
     setManualPriceValue('')
+    setTargetPrice('')
+    setTargetError('')
     setRecipeItems([{ raw_material_id: '', quantity: 1 }])
     setIsNewRecipe(true)
   }
@@ -167,6 +173,8 @@ export default function AdminCostsPage() {
     setSaleMode(prod?.unit === 'kg' ? 'kg' : 'unidad')
     setManualPrice(prod?.manual_price ?? false)
     setManualPriceValue(prod?.price === null || prod?.price === undefined ? '' : String(prod.price))
+    setTargetPrice('')
+    setTargetError('')
     setRecipeItems(r.items.map(i => ({ ...i })))
     setIsNewRecipe(false)
   }
@@ -197,6 +205,14 @@ export default function AdminCostsPage() {
       setSavingRecipe(false)
       return
     }
+    const typedMarkup = editingRecipe.markup_pct ?? 300
+    if (!Number.isFinite(typedMarkup) || typedMarkup < 0 || typedMarkup >= 10000) {
+      setRecipeError('Ingresá un margen entre 0% y 9999,99%.')
+      setSavingRecipe(false)
+      return
+    }
+    // La base guarda el margen con dos decimales (ej.: 265,75%).
+    const markupPct = Math.round(typedMarkup * 100) / 100
 
     // Resolver el producto: usar el existente o crearlo al vuelo por nombre.
     let productId = editingRecipe.product_id
@@ -235,7 +251,7 @@ export default function AdminCostsPage() {
       const { data, error: insertError } = await supabase.from('recipes').insert({
         product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
-        markup_pct: editingRecipe.markup_pct ?? 300,
+        markup_pct: markupPct,
         notes: editingRecipe.notes,
       }).select().single()
       if (insertError) { setRecipeError(insertError.message); setSavingRecipe(false); return }
@@ -244,7 +260,7 @@ export default function AdminCostsPage() {
       const { error: updateError } = await supabase.from('recipes').update({
         product_id: productId,
         yield_qty: editingRecipe.yield_qty ?? 1,
-        markup_pct: editingRecipe.markup_pct ?? 300,
+        markup_pct: markupPct,
         notes: editingRecipe.notes,
         updated_at: new Date().toISOString(),
       }).eq('id', recipeId!)
@@ -272,10 +288,9 @@ export default function AdminCostsPage() {
     
     const yieldQty = editingRecipe.yield_qty ?? 1
     const perUnit = yieldQty > 0 ? finalCost / yieldQty : finalCost
-    const markup = editingRecipe.markup_pct ?? 300
-    const suggestedPrice = roundUpTo100(perUnit * (1 + markup / 100))
+    const suggestedPrice = priceFromMarkup(perUnit, markupPct)
 
-    const finalPrice = manualPrice ? roundUpTo100(typedManualPrice) : suggestedPrice
+    const finalPrice = manualPrice ? roundPrice(typedManualPrice) : suggestedPrice
 
     // El nombre de la receta es el del producto asociado, por eso se actualizan juntos.
     // El precio manual se conserva aunque luego cambien ingredientes o margen.
@@ -310,8 +325,52 @@ export default function AdminCostsPage() {
       return sum + item.quantity * mat.unit_price
     }, 0)
     const perUnit = (editingRecipe?.yield_qty ?? 1) > 0 ? cost / (editingRecipe?.yield_qty ?? 1) : cost
-    const suggested = roundUpTo100(perUnit * (1 + (editingRecipe?.markup_pct ?? 300) / 100))
+    const suggested = priceFromMarkup(perUnit, editingRecipe?.markup_pct ?? 300)
     return { cost, perUnit, suggested }
+  }
+
+  // Calcula el margen necesario para llegar a un precio de venta deseado.
+  const applyTargetPrice = () => {
+    setTargetError('')
+    const target = Number(targetPrice.replace(',', '.'))
+    const { perUnit } = formCostPreview()
+    if (!Number.isFinite(target) || target <= 0) { setTargetError('Ingresá el precio al que querés llegar.'); return }
+    if (!(perUnit > 0)) { setTargetError('Primero cargá los ingredientes y el rinde para conocer el costo.'); return }
+    const markup = markupForPrice(perUnit, target)
+    if (markup === null || markup < 0) { setTargetError(`Ese precio es menor que el costo por unidad (${fmtARS(perUnit)}).`); return }
+    if (markup >= 10000) { setTargetError('Ese precio necesita un margen mayor a 9999,99%.'); return }
+    setEditingRecipe(prev => ({ ...prev!, markup_pct: markup }))
+  }
+
+  // ── Precios del mostrador desactualizados ─────────────────────────────────────
+  // El precio de cada producto se guarda al guardar su receta. Si después cambia
+  // el costo de una materia prima, el precio del mostrador queda viejo hasta que
+  // se actualiza. Los precios manuales nunca se tocan.
+  const outdatedPrices = recipes.flatMap((recipe) => {
+    const product = products.find(p => p.id === recipe.product_id)
+    if (!product || product.manual_price) return []
+    const suggested = calcSuggestedPrice(recipe)
+    if (suggested <= 0) return []
+    const current = product.price === null ? null : Number(product.price)
+    if (current !== null && roundPrice(current) === suggested) return []
+    return [{ productId: product.id, name: product.name, current, suggested }]
+  })
+
+  const applyRecipePrices = async (targets: { productId: string; name: string; suggested: number }[]) => {
+    if (targets.length === 0) return
+    if (targets.length > 1 && !confirm(`¿Actualizar el precio de ${targets.length} productos al que indica su receta?`)) return
+    setApplyingPrices(true)
+    setPriceMessage('')
+    const failed: string[] = []
+    for (const target of targets) {
+      const { error } = await supabase.from('products').update({ price: target.suggested }).eq('id', target.productId).eq('manual_price', false)
+      if (error) failed.push(target.name)
+    }
+    await fetchRecipes()
+    setApplyingPrices(false)
+    setPriceMessage(failed.length
+      ? `No se pudo actualizar: ${failed.join(', ')}.`
+      : targets.length === 1 ? `${targets[0].name}: precio actualizado a ${fmtARS(targets[0].suggested)}.` : `${targets.length} precios actualizados.`)
   }
 
   const fmtARS = (n: number) =>
@@ -349,6 +408,15 @@ export default function AdminCostsPage() {
       {/* ── MATERIALS TAB ── */}
       {tab === 'materials' && (
         <>
+          {!recLoading && outdatedPrices.length > 0 && (
+            <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <AlertTriangle size={18} className="text-amber-700 shrink-0" />
+              <p className="flex-1 font-body text-sm text-amber-900">
+                {outdatedPrices.length === 1 ? 'Hay 1 producto' : `Hay ${outdatedPrices.length} productos`} con el precio del mostrador distinto al que indica su receta (por ejemplo, porque cambió el costo de una materia prima).
+              </p>
+              <button onClick={() => setTab('recipes')} className="px-3 py-2 rounded-lg bg-amber-700 text-white font-body text-xs font-semibold hover:bg-amber-800 whitespace-nowrap">Revisar precios</button>
+            </div>
+          )}
           <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between mb-4">
             <div className="relative flex-1 max-w-sm">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray pointer-events-none" />
@@ -501,6 +569,20 @@ export default function AdminCostsPage() {
             </button>
           </div>
 
+          {!recLoading && outdatedPrices.length > 0 && (
+            <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <AlertTriangle size={18} className="text-amber-700 shrink-0" />
+              <p className="flex-1 font-body text-sm text-amber-900">
+                {outdatedPrices.length === 1 ? '1 producto tiene' : `${outdatedPrices.length} productos tienen`} en el mostrador un precio distinto al de su receta. Están marcados abajo; podés actualizarlos de a uno o todos juntos. Los precios manuales no se tocan.
+              </p>
+              <button onClick={() => void applyRecipePrices(outdatedPrices)} disabled={applyingPrices}
+                className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-amber-700 text-white font-body text-xs font-semibold hover:bg-amber-800 disabled:opacity-50 whitespace-nowrap">
+                <RefreshCw size={13} className={applyingPrices ? 'animate-spin' : ''} /> Actualizar {outdatedPrices.length === 1 ? 'precio' : `los ${outdatedPrices.length} precios`}
+              </button>
+            </div>
+          )}
+          {priceMessage && <div className="mb-4 px-4 py-3 rounded-xl bg-green-50 border border-green-200 text-green-800 font-body text-sm">{priceMessage}</div>}
+
           {/* Recipe form modal */}
           {editingRecipe && (
             <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
@@ -573,13 +655,32 @@ export default function AdminCostsPage() {
                     </div>
                     <div className="flex flex-col gap-1">
                       <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Margen (%)</label>
-                      <input type="number" min="0" step="1"
+                      <input type="number" min="0" max="9999.99" step="0.01"
                         value={editingRecipe.markup_pct ?? ''}
                         placeholder="300"
                         onChange={e => setEditingRecipe(prev => ({ ...prev!, markup_pct: e.target.value === '' ? undefined : Number(e.target.value) }))}
                         className="px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy" />
+                      <span className="font-body text-[11px] text-warm-gray">Acepta decimales, por ejemplo 265,7.</span>
                     </div>
                   </div>
+
+                  {!manualPrice && (
+                    <div className="rounded-xl border border-border p-4 flex flex-col gap-2">
+                      <label className="font-body text-xs text-warm-gray uppercase tracking-wide flex items-center gap-1.5"><Target size={13} /> ¿A qué precio querés llegar? (opcional)</label>
+                      <div className="flex gap-2">
+                        <input type="number" min="0" step="1" value={targetPrice}
+                          onChange={(event) => { setTargetPrice(event.target.value); setTargetError('') }}
+                          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyTargetPrice() } }}
+                          placeholder="Ej.: 325" className="flex-1 px-3 py-2 border border-border rounded-lg font-num text-sm focus:outline-none focus:border-burgundy" />
+                        <button type="button" onClick={applyTargetPrice}
+                          className="px-3 py-2 rounded-lg border border-burgundy text-burgundy font-body text-xs font-semibold hover:bg-burgundy hover:text-cream transition-colors whitespace-nowrap">
+                          Calcular margen
+                        </button>
+                      </div>
+                      <span className="font-body text-[11px] text-warm-gray">Calcula el margen exacto, con decimales, para llegar a ese precio. El precio queda atado al costo: si suben los ingredientes, sube manteniendo el margen.</span>
+                      {targetError && <span className="font-body text-xs text-red-600">{targetError}</span>}
+                    </div>
+                  )}
 
                   <div className="rounded-xl border border-border bg-cream/30 p-4 flex flex-col gap-3">
                     <label className="flex items-start gap-2 cursor-pointer">
@@ -592,9 +693,9 @@ export default function AdminCostsPage() {
                     {manualPrice && (
                       <div className="flex flex-col gap-1">
                         <label className="font-body text-xs text-warm-gray uppercase tracking-wide">Precio de venta</label>
-                        <input type="number" min="0" step="100" value={manualPriceValue} onChange={(event) => setManualPriceValue(event.target.value)}
+                        <input type="number" min="0" step="1" value={manualPriceValue} onChange={(event) => setManualPriceValue(event.target.value)}
                           placeholder="0" className="px-3 py-2.5 border border-border rounded-lg font-num text-sm focus:outline-none focus:border-burgundy bg-white" />
-                        <span className="font-body text-[11px] text-warm-gray">Se redondea hacia arriba al próximo múltiplo de $100.</span>
+                        <span className="font-body text-[11px] text-warm-gray">Se guarda tal cual, redondeado al peso (sin centavos).</span>
                       </div>
                     )}
                   </div>
@@ -700,6 +801,7 @@ export default function AdminCostsPage() {
                 const costPerUnit = recipe.yield_qty > 0 ? costTotal / recipe.yield_qty : costTotal
                 const suggested = calcSuggestedPrice(recipe)
                 const expanded = expandedRecipe === recipe.id
+                const outdated = outdatedPrices.find(item => item.productId === recipe.product_id)
 
                 return (
                   <div key={recipe.id} className="bg-white rounded-2xl border border-border shadow-sm overflow-hidden">
@@ -712,7 +814,7 @@ export default function AdminCostsPage() {
                         <div>
                           <div className="font-body font-semibold text-charcoal">{product?.name ?? 'Producto eliminado'}</div>
                           <div className="font-body text-xs text-warm-gray mt-0.5">
-                            Rinde {recipe.yield_qty} {product?.unit ?? 'und'} · Margen {recipe.markup_pct}%
+                            Rinde {recipe.yield_qty} {product?.unit ?? 'und'} · Margen {Number(recipe.markup_pct).toLocaleString('es-AR')}%
                           </div>
                         </div>
                       </div>
@@ -722,8 +824,21 @@ export default function AdminCostsPage() {
                           <div className="font-num text-sm font-semibold text-charcoal">{fmtARS(costPerUnit)}</div>
                         </div>
                         <div className="text-right">
-                          <div className="font-body text-xs text-warm-gray flex items-center gap-1"><TrendingUp size={11} /> Precio sugerido</div>
+                          <div className="font-body text-xs text-warm-gray flex items-center gap-1 justify-end"><TrendingUp size={11} /> Precio sugerido</div>
                           <div className="font-num text-base font-bold text-burgundy">{fmtARS(suggested)}</div>
+                          {product?.manual_price && product.price !== null && (
+                            <div className="font-body text-[11px] text-warm-gray">Manual: {fmtARS(Number(product.price))}</div>
+                          )}
+                          {outdated && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); void applyRecipePrices([outdated]) }}
+                              disabled={applyingPrices}
+                              title="Actualizar el precio del mostrador al que indica la receta"
+                              className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-body text-[11px] font-semibold hover:bg-amber-200 disabled:opacity-50"
+                            >
+                              <AlertTriangle size={11} /> Mostrador: {outdated.current === null ? 'sin precio' : fmtARS(outdated.current)} · Aplicar
+                            </button>
+                          )}
                         </div>
                         <div className="flex gap-1">
                           <button
@@ -776,7 +891,7 @@ export default function AdminCostsPage() {
                             </tr>
                             <tr>
                               <td colSpan={3} className="py-1 font-body text-sm font-semibold text-burgundy">
-                                Precio de venta sugerido (+{recipe.markup_pct}%)
+                                Precio de venta sugerido (+{Number(recipe.markup_pct).toLocaleString('es-AR')}%)
                               </td>
                               <td className="py-1 font-num text-base font-bold text-burgundy text-right">{fmtARS(suggested)}</td>
                             </tr>

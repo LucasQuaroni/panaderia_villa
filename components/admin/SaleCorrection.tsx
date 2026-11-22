@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { roundUpTo100 } from '@/lib/money'
+import { lineSubtotal, roundPrice } from '@/lib/money'
 import { readJsonSetting } from '@/lib/json-settings'
 import type { SalePaymentSummary } from '@/lib/pos/cash'
 import { Plus, Trash2, X } from 'lucide-react'
@@ -81,12 +81,12 @@ export default function SaleCorrection({ saleId, onClose, onSaved }: { saleId: s
   const editItem = (index: number, patch: Partial<Item>, recalculate = false) => setItems(previous => previous.map((item, i) => {
     if (i !== index) return item
     const next = { ...item, ...patch }
-    if (recalculate) { next.stock_quantity = Math.round(next.quantity * next.factor * 1000) / 1000; next.subtotal = roundUpTo100(next.quantity * next.unit_price) }
+    if (recalculate) { next.stock_quantity = Math.round(next.quantity * next.factor * 1000) / 1000; next.subtotal = lineSubtotal(next.quantity, next.unit_price, next.unit) }
     return next
   }))
   const chooseProduct = (index: number, id: string) => {
     const product = products.find(row => row.id === id)
-    const price = product ? roundUpTo100(Number((sale?.sale_channel === 'mayorista' ? wholesalePrices[product.id]?.price : undefined) ?? product.price ?? 0)) : 0
+    const price = product ? roundPrice(Number((sale?.sale_channel === 'mayorista' ? wholesalePrices[product.id]?.price : undefined) ?? product.price ?? 0)) : 0
     editItem(index, product ? { product_id: product.id, description: product.name, unit: product.unit, unit_price: price, factor: 1 } : { product_id: null, description: 'Varios', unit: 'unidad', factor: 1 }, true)
   }
   const save = async () => {

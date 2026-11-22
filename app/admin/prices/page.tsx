@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { roundUpTo100 } from '@/lib/money'
+import { roundPrice } from '@/lib/money'
 import { ClipboardList, Printer, Tags } from 'lucide-react'
 
 interface Product {
@@ -84,7 +84,7 @@ export default function AdminPricesPage() {
               <h3 className="font-sans text-lg font-bold text-charcoal border-b border-border pb-1 mb-2">{category}</h3>
               <table className="w-full"><tbody>{items.map(product => <tr key={product.id} className="border-b border-border/40">
                 <td className="py-1.5 pr-2 font-body text-sm text-charcoal">{product.name}</td>
-                <td className="py-1.5 text-right font-num text-sm font-bold text-burgundy whitespace-nowrap">{product.price !== null ? <>{fmtARS(roundUpTo100(Number(product.price)))} <span className="font-normal text-warm-gray text-xs">{unitLabel(product.unit)}</span></> : <span className="text-warm-gray">—</span>}</td>
+                <td className="py-1.5 text-right font-num text-sm font-bold text-burgundy whitespace-nowrap">{product.price !== null ? <>{fmtARS(roundPrice(Number(product.price)))} <span className="font-normal text-warm-gray text-xs">{unitLabel(product.unit)}</span></> : <span className="text-warm-gray">—</span>}</td>
               </tr>)}</tbody></table>
             </div>)}
           </div>

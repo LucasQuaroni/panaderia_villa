@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { readJsonSetting, writeJsonSetting } from '@/lib/json-settings'
-import { roundUpTo100 } from '@/lib/money'
+import { lineSubtotal, roundPrice } from '@/lib/money'
 import { useScale, EMPTY_KG } from '@/hooks/use-scale'
 import { updateCartAt, type CartIndex } from '@/lib/pos/cart-pair'
 import { cartDraftKey, readCartDraft, saveCartDraft } from '@/lib/pos/cart-drafts'
@@ -19,7 +19,7 @@ interface PriceSetting { markup_pct:number|null; price:number }
 type Method='Efectivo'|'Transferencia'|'Cuenta corriente'|'Pago parcial'; type Cart={items:CartItem[];customerId:string;paymentMethod:Method;paidAmount?:string;paidMethod?:'Efectivo'|'Transferencia';paidWith?:string}; type Tab='sale'|'customers'|'prices'; type Role='admin'|'cashier'|null
 const blank=():Cart=>({items:[],customerId:'',paymentMethod:'Efectivo'}); const PRICES_KEY='wholesale_prices_v1'
 const fmt=(v:number)=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:2}).format(v)
-const cls='w-full px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white'; const parse=(s:string)=>Number(s.replace(',','.')); const line=(x:CartItem)=>roundUpTo100(x.quantity*x.unitPrice)
+const cls='w-full px-3 py-2.5 border border-border rounded-lg font-body text-sm focus:outline-none focus:border-burgundy bg-white'; const parse=(s:string)=>Number(s.replace(',','.')); const line=(x:CartItem)=>lineSubtotal(x.quantity,x.unitPrice,x.product.unit)
 // El vuelto es sólo una ayuda: si no se carga con cuánto paga, se cobra igual.
 const cashChange=(cart:Cart,total:number)=>{const value=(cart.paidWith??'').trim(),paid=parse(value),entered=cart.paymentMethod==='Efectivo'&&value!=='',valid=entered&&Number.isFinite(paid)&&paid>0;return {entered,valid,change:valid?paid-total:0,short:entered&&(!valid||paid<total)}}
 
@@ -73,7 +73,7 @@ export default function WholesalePage(){
  useEffect(()=>{if(draftOwner)saveCartDraft(cartDraftKey('mayorista',draftOwner),carts,active)},[draftOwner,carts,active])
  const cart=carts[active]
  const selected=customers.find(customer=>customer.id===cart.customerId)
- const price=useCallback((product:Product)=>roundUpTo100(Number(prices[product.id]?.price??product.price??0)),[prices])
+ const price=useCallback((product:Product)=>roundPrice(Number(prices[product.id]?.price??product.price??0)),[prices])
  const total=cart.items.reduce((sum,item)=>sum+line(item),0)
  const norm=(value:string)=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
  const listed=useMemo(()=>products.filter(product=>product.show_on_pos!==false&&norm(product.name).includes(norm(search))&&(!letter||norm(product.name).startsWith(norm(letter)))&&price(product)>0),[products,search,letter,price])
@@ -82,7 +82,7 @@ export default function WholesalePage(){
  const editAt=(index:CartIndex,fn:(current:Cart)=>Cart)=>setCarts(previous=>updateCartAt(previous,index,fn))
  const edit=(fn:(current:Cart)=>Cart)=>editAt(active,fn)
  const costFor=useCallback((productId:string)=>{const recipe=recipes.find(item=>item.product_id===productId);if(!recipe)return null;const totalCost=(recipe.items??[]).reduce((sum,item)=>sum+Number(item.quantity)*Number(item.raw_material?.unit_price??0),0);return Number(recipe.yield_qty)>0?totalCost/Number(recipe.yield_qty):totalCost},[recipes])
- const draftPrice=(product:Product)=>{const cost=costFor(product.id);if(cost===null)return parse(priceDrafts[product.id]??'')||0;const markup=parse(markupDrafts[product.id]??'0');return roundUpTo100(cost*(1+(Number.isFinite(markup)?markup:0)/100))}
+ const draftPrice=(product:Product)=>{const cost=costFor(product.id);if(cost===null)return parse(priceDrafts[product.id]??'')||0;const markup=parse(markupDrafts[product.id]??'0');return roundPrice(cost*(1+(Number.isFinite(markup)?markup:0)/100))}
  const balanceFor=(customerId:string)=>(accountSales[customerId]??0)-(accountPayments[customerId]??0)
  const add=(product:Product,quantity=1,target:CartIndex=active)=>editAt(target,current=>{const existing=current.items.find(item=>item.product.id===product.id);if(existing){const next=Math.round((existing.quantity+quantity)*1000)/1000;return {...current,items:current.items.map(item=>item===existing?{...item,quantity:next,draft:String(next).replace('.',',')}:item)}}return {...current,items:[...current.items,{product,quantity,unitPrice:price(product),draft:quantity.toFixed(product.unit==='kg'?3:0).replace('.',',')}]}})
  const startWeighing=(product:Product)=>{weighingCartRef.current=active;setWeighing(product)}
@@ -114,7 +114,7 @@ export default function WholesalePage(){
  const saveCustomer=async(customer:Customer)=>{const {error}=role==='cashier'?await supabase.from('wholesale_customers').insert(customer):await supabase.from('wholesale_customers').upsert(customer);if(error)return error.message;setModal(null);await load();return null}
  const toggle=async(customer:Customer)=>{const action=customer.active?'dar de baja':'reactivar';if(!window.confirm(`¿Confirmás ${action} a ${customer.business_name}? Se conserva todo el historial.`))return;const {error}=await supabase.from('wholesale_customers').update({active:!customer.active}).eq('id',customer.id);setMessage(error?.message??`Cliente ${customer.active?'dado de baja':'reactivado'}.`);if(!error)await load()}
  const pay=async(customer:Customer,amount:number,method:'Efectivo'|'Transferencia')=>{if(!Number.isFinite(amount)||amount<=0)return 'Ingresá un importe válido.';if(!sessionId)return 'Abrí la caja compartida antes de registrar el cobro.';const {error}=await supabase.rpc('register_wholesale_payment',{p_customer_id:customer.id,p_cash_session_id:sessionId,p_amount:amount,p_payment_method:method});if(error)return error.message;setPaymentCustomer(null);setMessage(`Cobro de cuenta registrado por ${method}.`);await load();return null}
- const savePrice=async(product:Product)=>{const cost=costFor(product.id),rawMarkup=markupDrafts[product.id]??'',markup=rawMarkup===''?null:parse(rawMarkup),rawPrice=cost===null?parse(priceDrafts[product.id]??''):cost*(1+(markup??0)/100);if(!Number.isFinite(rawPrice)||rawPrice<0||(markup!==null&&(!Number.isFinite(markup)||markup<0)))return;const savedPrice=roundUpTo100(rawPrice),next={...prices,[product.id]:{markup_pct:cost===null?null:markup,price:savedPrice}};const error=await writeJsonSetting(supabase,PRICES_KEY,next);if(error)setMessage(`No se pudo guardar el precio mayorista: ${error}`);else{setPrices(next);setPriceDrafts(previous=>({...previous,[product.id]:String(savedPrice)}));setMessage('Precio mayorista guardado.')}}
+ const savePrice=async(product:Product)=>{const cost=costFor(product.id),rawMarkup=markupDrafts[product.id]??'',markup=rawMarkup===''?null:parse(rawMarkup),rawPrice=cost===null?parse(priceDrafts[product.id]??''):cost*(1+(markup??0)/100);if(!Number.isFinite(rawPrice)||rawPrice<0||(markup!==null&&(!Number.isFinite(markup)||markup<0)))return;const savedPrice=roundPrice(rawPrice),next={...prices,[product.id]:{markup_pct:cost===null?null:markup,price:savedPrice}};const error=await writeJsonSetting(supabase,PRICES_KEY,next);if(error)setMessage(`No se pudo guardar el precio mayorista: ${error}`);else{setPrices(next);setPriceDrafts(previous=>({...previous,[product.id]:String(savedPrice)}));setMessage('Precio mayorista guardado.')}}
 
  useEffect(()=>{const refresh=async()=>{const {data}=await supabase.from('cash_sessions').select('id').eq('status','open').order('opened_at',{ascending:false}).limit(1).maybeSingle();setSessionId(data?.id??null)};const timer=window.setInterval(refresh,15000);window.addEventListener('focus',refresh);return()=>{window.clearInterval(timer);window.removeEventListener('focus',refresh)}},[supabase])
  useEffect(()=>{if((cart.paymentMethod==='Cuenta corriente'||cart.paymentMethod==='Pago parcial')&&!selected?.has_current_account){setCarts(previous=>previous.map((current,index)=>index===active?{...current,paymentMethod:'Efectivo'}:current)as[Cart,Cart])}},[active,cart.paymentMethod,selected?.has_current_account])
