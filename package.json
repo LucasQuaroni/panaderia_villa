@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "test:balanza": "node --experimental-strip-types scripts/test_balanza.ts",
-    "test:precios": "node --experimental-strip-types scripts/test_precios.ts"
+    "test:precios": "node --experimental-strip-types scripts/test_precios.ts",
+    "test:mayorista": "node --experimental-strip-types scripts/test_cuenta_mayorista.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
