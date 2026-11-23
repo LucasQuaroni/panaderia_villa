@@ -31,6 +31,8 @@ export function movementLabel(reason: string, refType: string | null): string {
     case 'ajuste': return 'Ajuste puntual'
     case 'produccion': return 'Producción'
     case 'compra': return 'Compra'
+    // Reposición automática que existió hasta el 14/09/2026 (ya no se genera).
+    case 'stock_base_diario': return 'Stock base diario (sistema anterior)'
     default: return reason
   }
 }
