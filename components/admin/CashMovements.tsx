@@ -81,6 +81,6 @@ function ChannelBox({ title, accountLabel, rows, compact }: { title: string; acc
 function MovementList({ rows, compact, emptyMessage }: { rows: CashMovement[]; compact: boolean; emptyMessage: string }) {
   return <div className={`${compact ? 'max-h-60' : 'max-h-96'} overflow-auto mt-2 border rounded-xl divide-y`}>
     {rows.length === 0 && <p className="p-4 text-sm text-warm-gray">{emptyMessage}</p>}
-    {rows.map(row => <div key={row.id} className="p-3 flex justify-between gap-3 text-sm"><div><b>{row.customer_name}</b><p className="text-xs text-warm-gray">{cashMovementLabel(row)} · {row.payment_method}</p><p className="text-xs text-warm-gray">{new Date(row.occurred_at).toLocaleString('es-AR')}</p>{row.amount < 0 && <p className="text-xs text-red-700">Salida por corrección</p>}</div><span className={`font-num font-bold whitespace-nowrap ${row.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(Number(row.amount))}</span></div>)}
+    {rows.map(row => <div key={row.id} className="p-3 flex justify-between gap-3 text-sm"><div><b>{row.customer_name}</b><p className="text-xs text-warm-gray">{cashMovementLabel(row)} · {row.payment_method}</p><p className="text-xs text-warm-gray">{new Date(row.occurred_at).toLocaleString('es-AR', { hourCycle: 'h23' })}</p>{row.amount < 0 && <p className="text-xs text-red-700">Salida por corrección</p>}</div><span className={`font-num font-bold whitespace-nowrap ${row.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(Number(row.amount))}</span></div>)}
   </div>
 }

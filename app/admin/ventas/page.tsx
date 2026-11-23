@@ -146,7 +146,7 @@ export default function VentasPage() {
 
   const fmt = (n: number) =>
     new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 2 }).format(n)
-  const fmtTime = (s: string) => new Date(s).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })
+  const fmtTime = (s: string) => new Date(s).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
   const fmtQty = (q: number, unit: string) => unit === 'kg' ? `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} kg` : `${q.toLocaleString('es-AR', { maximumFractionDigits: 3 })} ${unit}`
 
   const methods = ['Todos', ...Array.from(new Set(sales.map(s => s.payment_method ?? '—')))]
@@ -199,7 +199,7 @@ export default function VentasPage() {
           {methods.map(m => <option key={m} value={m}>{m === 'Todos' ? 'Todos los pagos' : m}</option>)}
         </select>
         <span className="ml-auto font-body text-xs text-warm-gray">
-          {refreshing ? 'Actualizando…' : lastUpdated ? `Actualizado ${lastUpdated.toLocaleTimeString('es-AR')}` : ''}
+          {refreshing ? 'Actualizando…' : lastUpdated ? `Actualizado ${lastUpdated.toLocaleTimeString('es-AR', { hourCycle: 'h23' })}` : ''}
         </span>
       </div>
 
